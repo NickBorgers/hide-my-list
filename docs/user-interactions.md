@@ -15,6 +15,7 @@ flowchart TD
     Detect --> Complete["COMPLETE<br/>Finished task"]
     Detect --> Reject["REJECT<br/>Don't want this task"]
     Detect --> CannotFinish["CANNOT_FINISH<br/>Task too large"]
+    Detect --> CheckIn["CHECK_IN<br/>System follow-up"]
     Detect --> Chat["CHAT<br/>General conversation"]
 
     AddTask --> IntakeFlow[Task Intake Flow]
@@ -22,6 +23,7 @@ flowchart TD
     Complete --> CompletionFlow[Completion Flow]
     Reject --> RejectionFlow[Rejection Flow]
     CannotFinish --> BreakdownFlow[Task Breakdown Flow]
+    CheckIn --> CheckInFlow[Check-In Flow]
     Chat --> ChatResponse[Conversational Response]
 ```
 
@@ -34,6 +36,7 @@ flowchart TD
 | COMPLETE | "Done", "Finished", "Completed", "I did it" |
 | REJECT | "Not that one", "Something else", "I don't want to" |
 | CANNOT_FINISH | "This is too big", "I can't finish this", "Too much for one sitting" |
+| CHECK_IN | System-initiated (timer triggered, not user message) |
 | CHAT | "Hello", "How does this work?", "What's in my list?" |
 
 ## Flow 1: Task Intake
@@ -403,7 +406,138 @@ flowchart LR
 
 ---
 
-## Flow 6: Special Cases
+## Flow 6: Check-In Follow-Up
+
+When a user accepts a task, the system sets a timer for 1.25x the estimated completion time. If the timer expires before the user marks the task complete, the system proactively follows up.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant UI as Chat UI
+    participant T as Timer
+    participant AI as AI Assistant
+    participant N as Notion
+
+    U->>AI: "Sure, I'll do that"
+    AI->>N: Update status → in_progress
+    AI->>U: "Great, it's yours. Let me know when done!"
+    AI->>UI: Return time_estimate (30 min)
+    UI->>T: Set timer for 37.5 min
+
+    Note over T: 37.5 minutes later...
+
+    T->>UI: Timer expired
+    UI->>AI: CHECK_IN request
+    AI->>N: Verify task still in_progress
+    N-->>AI: Yes, still in_progress
+    AI->>U: "How's the quarterly report going? Still at it?"
+
+    alt User completed
+        U->>AI: "Oh yeah, finished that!"
+        AI->>N: Update status → completed
+        AI->>U: "Nice! Marking that off."
+        UI->>T: Clear timer
+    else User still working
+        U->>AI: "Still working on it"
+        AI->>U: "No rush - keep at it!"
+        UI->>T: Reset timer (15 min)
+    else User got distracted
+        U->>AI: "Ugh, got distracted"
+        AI->>U: "Happens to everyone. Want to jump back in?"
+    else User needs more time
+        U->>AI: "Need another 20 minutes"
+        AI->>U: "No problem, I'll check back then."
+        UI->>T: Set timer (25 min)
+    else User wants to stop
+        U->>AI: "Let me do something else"
+        AI->>N: Update status → pending
+        AI->>U: "Got it - back in the queue. What next?"
+        UI->>T: Clear timer
+    end
+```
+
+### Check-In Decision Tree
+
+```mermaid
+flowchart TD
+    Timer([Timer expires]) --> StillActive{Task still in_progress?}
+
+    StillActive -->|No| Skip[Skip - already handled]
+    StillActive -->|Yes| CheckInCount{Check-in count?}
+
+    CheckInCount -->|1st| Friendly["How's [task] going?"]
+    CheckInCount -->|2nd| Brief["Still working on [task]?"]
+    CheckInCount -->|3rd| Gentle["Want to take a break from [task]?"]
+    CheckInCount -->|4th+| Stop[Stop checking in]
+
+    Friendly --> UserResponse
+    Brief --> UserResponse
+    Gentle --> UserResponse
+
+    UserResponse{User response}
+    UserResponse --> Done["Done!"]
+    UserResponse --> Working["Still working"]
+    UserResponse --> Distracted["Got distracted"]
+    UserResponse --> MoreTime["Need more time"]
+    UserResponse --> Stop2["Want to stop"]
+
+    Done --> Complete[Mark completed, clear timer]
+    Working --> Reset1[Reset timer 0.5x]
+    Distracted --> Nudge["Jump back in?"]
+    MoreTime --> AskDuration["How much longer?"]
+    Stop2 --> ReturnQueue[Return to pending]
+
+    Nudge --> YesNo{User choice}
+    YesNo -->|Yes| Reset2[Reset timer 0.5x]
+    YesNo -->|No| ReturnQueue
+
+    AskDuration --> NewTime[User provides time]
+    NewTime --> Reset3[Set timer to time × 1.25]
+```
+
+### Check-In Response Templates
+
+| Scenario | AI Response |
+|----------|-------------|
+| 1st check-in | "How's [task] going? Still at it?" |
+| 2nd check-in | "Still working on [task]?" |
+| 3rd check-in | "Want to take a break from [task]? I'll be here when you're ready." |
+| User says done | "Nice! Marking that off. Ready for another?" |
+| User still working | "No rush - keep at it! I'll check back in a bit." |
+| User got distracted | "Happens to everyone. Want to jump back in, or try something else?" |
+| User needs more time | "No problem. About how much longer do you think?" |
+| User wants to stop | "Got it - I'll put that back in the queue. What would you like to do instead?" |
+
+### Client-Side Timer Implementation
+
+The check-in mechanism uses client-side timers to work with the stateless HTTP architecture:
+
+```mermaid
+flowchart LR
+    subgraph Client["Frontend (app.js)"]
+        Accept[Task accepted] --> Store[Store active task]
+        Store --> SetTimer[Set setTimeout]
+        SetTimer --> Timer[Timer running]
+        Timer --> Fire[Timer fires]
+        Fire --> Send[Send CHECK_IN]
+    end
+
+    subgraph Cleanup["Timer Cleanup"]
+        Complete[User completes] --> Clear1[clearTimeout]
+        Abandon[User abandons] --> Clear2[clearTimeout]
+        NewTask[New task accepted] --> Clear3[clearTimeout]
+    end
+```
+
+**Stored State:**
+- `activeTaskId`: Current task ID
+- `activeTaskTitle`: Task name for display
+- `checkInTimer`: setTimeout reference
+- `checkInCount`: Number of check-ins for this session
+
+---
+
+## Flow 7: Special Cases
 
 ### Empty Queue
 
@@ -502,4 +636,40 @@ sequenceDiagram
     AI->>U: Nice! That's 1 down today. Got time for another quick one?
     U->>AI: No, meeting's starting
     AI->>U: No worries - catch you later!
+```
+
+## Example Session with Check-In
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI
+    participant T as Timer
+
+    U->>AI: I have an hour, feeling focused
+    AI->>U: How about working on the quarterly report? ~45 min of focus work.
+    U->>AI: Sure
+    AI->>U: Great, it's yours. Let me know when done!
+    AI->>T: Set timer: 56 min (45 × 1.25)
+
+    Note over U,T: 56 minutes later...
+
+    T->>AI: Timer expired
+    AI->>U: How's the quarterly report going? Still at it?
+
+    U->>AI: Ugh, I got distracted reading emails
+    AI->>U: Happens to everyone. Want to jump back in, or try something else?
+
+    U->>AI: Yeah let me finish it
+    AI->>U: You got this! I'll check back in a bit.
+    AI->>T: Reset timer: 22 min (45 × 0.5)
+
+    Note over U,T: 22 minutes later...
+
+    T->>AI: Timer expired
+    AI->>U: Still working on the report?
+
+    U->>AI: Just finished!
+    AI->>U: Nice work! That's a big one done. Ready for a break or another task?
+    T->>T: Timer cleared
 ```
