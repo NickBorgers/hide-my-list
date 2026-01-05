@@ -155,6 +155,7 @@ The user wants to add a task. Extract details, infer labels, and ALWAYS generate
 
 User said: "{user_message}"
 Previous context: {conversation_history}
+User preferences: {user_preferences_context}
 
 CORE PRINCIPLE: Users interpret vague goals as infinite and avoid them.
 Every task MUST have explicit sub-tasks that define exactly what "done" looks like.
@@ -182,6 +183,28 @@ For EVERY task, generate:
 - Clear "done" criteria for each step
 - Time estimate for each step
 - Logical sequence
+
+PERSONALIZED PREP STEPS:
+Use the user's preferences to create an environment for success.
+The first 1-2 steps should help the user prepare mentally and physically.
+
+Based on user preferences, include relevant prep steps:
+- If user has a preferred beverage for this work type, suggest making it
+- If user has a comfort spot preference, suggest settling there
+- If user has prep rituals (phone away, close tabs), include them
+- Match environment suggestions to the work type
+
+Example for social task (phone call) with tea preference:
+1. Make a cup of tea
+2. Find a comfortable, quiet spot
+3. Make the call
+4. Note any follow-ups
+
+Example for focus task with coffee preference:
+1. Make coffee and put phone in another room
+2. Close email and messaging tabs
+3. [Core task steps...]
+4. Review work before marking done
 
 STORAGE DECISION (use_hidden_subtasks):
 - true: Store as separate Notion tasks (for tasks > 60 min or multi-phase work)
@@ -264,20 +287,21 @@ flowchart TD
 
 ### Task Examples (All Tasks Get Sub-tasks)
 
-**Quick Tasks (Inline Steps):**
+**Quick Tasks (Inline Steps) - Personalized:**
 
-| User Says | Confirmation Message |
-|-----------|---------------------|
-| "Call mom" | "Added - social, ~15 min. Here's your plan: 1) Find quiet spot, 2) Make call, 3) Note any follow-ups" |
-| "Pay electricity bill" | "Added - independent, ~10 min. Steps: 1) Open banking app, 2) Find payee, 3) Enter amount and pay" |
-| "Reply to Jake's email" | "Added - social, ~10 min. Steps: 1) Read his email, 2) Draft response, 3) Review and send" |
+| User Says | User Preferences | Confirmation Message |
+|-----------|------------------|---------------------|
+| "Call mom" | tea, cozy chair | "Added - social, ~15 min. Plan: 1) Make a cup of tea, 2) Settle into the cozy chair, 3) Make call, 4) Note any follow-ups" |
+| "Call mom" | (none set) | "Added - social, ~15 min. Plan: 1) Find quiet spot, 2) Make call, 3) Note any follow-ups" |
+| "Pay electricity bill" | batches admin tasks | "Added - independent, ~10 min. Steps: 1) Open banking app, 2) Find payee, 3) Enter amount and pay" |
+| "Reply to Jake's email" | tea before social | "Added - social, ~10 min. Steps: 1) Make tea, 2) Read his email, 3) Draft and send response" |
 
-**Standard Tasks (Inline Steps):**
+**Standard Tasks (Inline Steps) - Personalized:**
 
-| User Says | Confirmation Message |
-|-----------|---------------------|
-| "Review the proposal" | "Added - focus, ~45 min. Plan: 1) Read intro, 2) Check numbers, 3) Note concerns, 4) Draft feedback" |
-| "Prepare for meeting" | "Added - focus, ~30 min. Steps: 1) Review agenda, 2) Gather materials, 3) Note talking points" |
+| User Says | User Preferences | Confirmation Message |
+|-----------|------------------|---------------------|
+| "Review the proposal" | coffee, phone away | "Added - focus, ~45 min. Plan: 1) Make coffee, put phone away, 2) Read intro, 3) Check numbers, 4) Note concerns, 5) Draft feedback" |
+| "Prepare for meeting" | natural light spot | "Added - focus, ~30 min. Steps: 1) Find your sunny spot, 2) Review agenda, 3) Gather materials, 4) Note talking points" |
 
 **Large Tasks (Hidden Sub-tasks):**
 
@@ -360,6 +384,105 @@ flowchart TD
 | Time | "About how long do you think this will take?" |
 | Work type | "Is this focused thinking or more routine work?" |
 | Task unclear | "Can you tell me a bit more about what that involves?" |
+
+---
+
+## User Preferences Context
+
+When generating task breakdowns, user preferences are assembled into a context block that is injected into the prompt. This enables personalized prep steps that create an environment for success.
+
+### Preference Context Block Format
+
+```
+USER_PREFERENCES_CONTEXT:
+This user has the following preferences:
+
+General:
+- Preferred beverage: {preferred_beverage}
+- Comfort spot: {comfort_spot}
+- Transition ritual: {transition_ritual}
+
+For {work_type} tasks:
+- Environment: {work_type_prefs.environment}
+- Prep steps: {work_type_prefs.prep_steps}
+- Beverage: {work_type_prefs.beverage}
+
+Task pattern preferences (if applicable):
+- {matched_pattern}: {pattern_prefs}
+
+Current context:
+- Time of day: {time_of_day} ({time_prefs})
+- Energy level: {energy_level} ({energy_prefs})
+
+When generating sub-tasks, include personalized prep steps that align with these preferences.
+The first 1-2 steps should focus on environment setup and mental preparation.
+```
+
+### Example Context Blocks
+
+**For a social task (phone call) in the afternoon:**
+```
+USER_PREFERENCES_CONTEXT:
+This user has the following preferences:
+
+General:
+- Preferred beverage: tea
+- Comfort spot: cozy chair in the living room
+- Transition ritual: 3 deep breaths
+
+For social tasks:
+- Environment: comfortable, quiet spot
+- Prep steps: review context, set intention
+- Beverage: tea
+
+Task pattern preferences:
+- phone_calls: find quiet room, review last interaction, prepare 2-3 topics
+
+Current context:
+- Time of day: afternoon (tea preferred, good for social tasks)
+- Energy level: medium (standard rituals)
+
+When generating sub-tasks, include personalized prep steps that align with these preferences.
+The first 1-2 steps should focus on environment setup and mental preparation.
+```
+
+**For a focus task (writing) in the morning:**
+```
+USER_PREFERENCES_CONTEXT:
+This user has the following preferences:
+
+General:
+- Preferred beverage: coffee
+- Comfort spot: standing desk in the office
+- Transition ritual: quick stretch
+
+For focus tasks:
+- Environment: quiet office, door closed
+- Prep steps: put phone in another room, close email
+- Beverage: coffee
+- Music: lo-fi
+
+Task pattern preferences:
+- writing: 2 min free-write warmup, breaks every 25 min
+
+Current context:
+- Time of day: morning (coffee preferred, ideal for focus work)
+- Energy level: high (minimal prep, dive in quickly)
+
+When generating sub-tasks, include personalized prep steps that align with these preferences.
+The first 1-2 steps should focus on environment setup and mental preparation.
+```
+
+### Preference Fallbacks
+
+When user preferences are not set, the system uses sensible defaults:
+
+| Work Type | Default Prep Steps |
+|-----------|-------------------|
+| focus | Find quiet spot, minimize distractions |
+| creative | Find inspiring space, gather materials |
+| social | Find quiet spot, review context |
+| independent | Gather needed items, set up workspace |
 
 ---
 

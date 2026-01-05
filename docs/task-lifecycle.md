@@ -141,9 +141,13 @@ After labeling, the AI **always** generates a series of actionable sub-tasks for
 
 **Key Principle:** Every task, no matter how simple it appears, gets explicit sub-tasks that define exactly what "done" looks like.
 
+**Key Enhancement:** Sub-tasks are personalized based on user preferences to create an environment for success. The first 1-2 steps focus on preparation and comfort.
+
 ```mermaid
 flowchart TD
-    Labeled([Task Labeled]) --> Generate[Generate sub-tasks for ALL tasks]
+    Labeled([Task Labeled]) --> FetchPrefs[Fetch user preferences]
+    FetchPrefs --> BuildContext[Build preference context]
+    BuildContext --> Generate[Generate personalized sub-tasks]
 
     Generate --> Evaluate{Task size?}
 
@@ -167,21 +171,54 @@ flowchart LR
     end
 
     subgraph Solution["The Solution"]
-        Specific["'Call mom'<br/>1. Find quiet spot<br/>2. Dial and greet<br/>3. Ask about health<br/>4. Wrap up"]
+        Specific["'Call mom'<br/>1. Make a cup of tea<br/>2. Settle into cozy chair<br/>3. Make the call<br/>4. Note any follow-ups"]
         Bounded["Clear, finite steps"]
+        Comfort["Personalized comfort"]
         Action["User takes action"]
     end
 
     Problem --> Solution
 ```
 
+### Personalized Prep Steps
+
+Before generating core task steps, the system fetches user preferences and injects them into the breakdown prompt. This enables personalized "environment for success" steps.
+
+```mermaid
+flowchart TD
+    subgraph Preferences["User Preferences Lookup"]
+        General["General: tea, cozy chair"]
+        WorkType["Social: quiet spot, review context"]
+        Pattern["Phone calls: review last chat"]
+        Context["Afternoon, medium energy"]
+    end
+
+    subgraph Generation["Personalized Generation"]
+        Prep["Prep steps: beverage + environment"]
+        Core["Core steps: actual task actions"]
+        FollowUp["Follow-up: capture outcomes"]
+    end
+
+    subgraph Output["Final Breakdown"]
+        Step1["1. Make a cup of tea"]
+        Step2["2. Settle into the cozy chair"]
+        Step3["3. Make the call"]
+        Step4["4. Note any follow-ups"]
+    end
+
+    Preferences --> Generation
+    Generation --> Output
+```
+
+See [user-preferences.md](./user-preferences.md) for full preference system documentation.
+
 ### Sub-task Generation Rules
 
-| Task Type | Sub-task Approach | Example |
+| Task Type | Sub-task Approach | Example (with preferences: tea, cozy chair) |
 |-----------|-------------------|---------|
-| Quick (15 min) | 2-3 inline steps | "Call mom" → 1. Find quiet spot, 2. Make call, 3. Note any follow-ups |
-| Standard (30-60 min) | 3-5 inline steps | "Review proposal" → 1. Read intro, 2. Check numbers, 3. Note concerns, 4. Draft feedback |
-| Large (60+ min) | Hidden sub-tasks | "Complete report" → 4 separate tasks in Notion |
+| Quick (15 min) | 2-4 inline steps | "Call mom" → 1. Make tea, 2. Settle into cozy chair, 3. Make call, 4. Note follow-ups |
+| Standard (30-60 min) | 3-6 inline steps | "Review proposal" → 1. Make coffee, 2. Find quiet spot, 3. Read intro, 4. Check numbers, 5. Note concerns, 6. Draft feedback |
+| Large (60+ min) | Hidden sub-tasks | "Complete report" → 4+ separate tasks in Notion (each with prep steps) |
 
 ### Complexity Signals (For Hidden vs. Inline)
 
@@ -264,11 +301,12 @@ flowchart TD
 
 ### Task Reframing
 
-| User Says | What User Sees | Hidden Reality |
-|-----------|----------------|----------------|
-| "Complete the project" | "Draft project outline - 30 min" | 4 sub-tasks created |
-| "Finish the report" | "Write report introduction - 45 min" | 4 sub-tasks created |
-| "Plan the event" | "List event requirements - 20 min" | 5 sub-tasks created |
+| User Says | What User Sees (personalized) | Hidden Reality |
+|-----------|-------------------------------|----------------|
+| "Complete the project" | "Make coffee, then draft project outline - 35 min" | 4 sub-tasks created (each with personalized prep) |
+| "Finish the report" | "Find your quiet spot, then write report introduction - 50 min" | 4 sub-tasks created |
+| "Plan the event" | "Grab a tea and list event requirements - 25 min" | 5 sub-tasks created |
+| "Call mom" | "Make tea, settle into cozy chair, make call - 15 min" | Inline steps with prep |
 
 ## Phase 3: Task Selection
 
