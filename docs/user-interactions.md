@@ -1,0 +1,401 @@
+# User Interactions
+
+## Overview
+
+All interactions in hide-my-list happen through natural language conversation. The AI determines user intent from their message and responds appropriately. This document details all conversation flows and user journeys.
+
+## Intent Detection
+
+```mermaid
+flowchart TD
+    Message([User Message]) --> Detect[AI Intent Detection]
+
+    Detect --> AddTask["ADD_TASK<br/>Adding new task"]
+    Detect --> GetTask["GET_TASK<br/>Ready to work"]
+    Detect --> Complete["COMPLETE<br/>Finished task"]
+    Detect --> Reject["REJECT<br/>Don't want this task"]
+    Detect --> Chat["CHAT<br/>General conversation"]
+
+    AddTask --> IntakeFlow[Task Intake Flow]
+    GetTask --> SelectionFlow[Task Selection Flow]
+    Complete --> CompletionFlow[Completion Flow]
+    Reject --> RejectionFlow[Rejection Flow]
+    Chat --> ChatResponse[Conversational Response]
+```
+
+### Intent Signal Examples
+
+| Intent | Example Messages |
+|--------|------------------|
+| ADD_TASK | "I need to...", "Add...", "Remind me to...", "New task:" |
+| GET_TASK | "I have X minutes", "What should I do?", "I'm ready to work" |
+| COMPLETE | "Done", "Finished", "Completed", "I did it" |
+| REJECT | "Not that one", "Something else", "I don't want to" |
+| CHAT | "Hello", "How does this work?", "What's in my list?" |
+
+## Flow 1: Task Intake
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI Assistant
+    participant N as Notion
+
+    U->>AI: "I need to review Sarah's proposal"
+
+    Note over AI: Parse task, infer labels
+    Note over AI: Confidence: WorkType=85%, Urgency=40%, Time=60%
+
+    AI->>U: "Got it. Is this time-sensitive, or can it wait?"
+    U->>AI: "She needs feedback by Friday"
+
+    Note over AI: Urgency now 90% confident → 65/100
+    Note over AI: All labels confident enough
+
+    AI->>N: Create task with labels
+    N-->>AI: Task created
+    AI->>U: "Added - focused work, ~30 min, moderate urgency. Ready for another?"
+```
+
+### Intake Conversation Tree
+
+```mermaid
+flowchart TD
+    Start([User describes task]) --> Parse[AI parses description]
+    Parse --> WorkType{Work type clear?}
+
+    WorkType -->|Yes| Urgency
+    WorkType -->|No| AskType["What kind of work is this?<br/>Focused / Creative / Social / Routine"]
+    AskType --> TypeAnswer[User responds]
+    TypeAnswer --> Urgency
+
+    Urgency{Urgency clear?}
+    Urgency -->|Yes| Time
+    Urgency -->|No| AskUrgency["Is this time-sensitive?"]
+    AskUrgency --> UrgencyAnswer[User responds]
+    UrgencyAnswer --> Time
+
+    Time{Time estimate possible?}
+    Time -->|Yes| Save
+    Time -->|No| AskTime["About how long will this take?"]
+    AskTime --> TimeAnswer[User responds]
+    TimeAnswer --> Save
+
+    Save[Save to Notion] --> Confirm([Confirm to user])
+```
+
+### Quick Capture vs. Detailed Intake
+
+```mermaid
+flowchart LR
+    subgraph Quick["Quick Capture (Common)"]
+        Q1[User: "Call mom"] --> Q2[AI: "Added - social, 15 min, low urgency"]
+    end
+
+    subgraph Detailed["Detailed Intake (When Needed)"]
+        D1[User: "Work on the project"] --> D2[AI: "Which project?"]
+        D2 --> D3[User: "The Q4 marketing plan"]
+        D3 --> D4[AI: "Got it. Is this creative work or more analytical?"]
+        D4 --> D5[User: "Creative, brainstorming phase"]
+        D5 --> D6[AI: "Added - creative work, 90 min estimate"]
+    end
+```
+
+## Flow 2: Task Selection
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI Assistant
+    participant N as Notion
+
+    U->>AI: "I have 20 minutes and feeling tired"
+
+    Note over AI: Parse: time=20, mood=tired→independent
+
+    AI->>N: Query pending tasks
+    N-->>AI: Return 8 pending tasks
+
+    Note over AI: Score each task
+    Note over AI: Best match: "Organize receipts" (score: 0.87)
+
+    AI->>U: "How about organizing your receipts from last week? It's low-energy admin work and should take about 15 minutes."
+
+    alt User accepts
+        U->>AI: "Sure"
+        AI->>N: Update status → in_progress
+        AI->>U: "Great, it's yours. Let me know when you're done!"
+    else User rejects
+        U->>AI: "Not that one"
+        Note over AI: Start rejection flow
+    end
+```
+
+### Selection Decision Tree
+
+```mermaid
+flowchart TD
+    Request([User requests task]) --> ParseContext[Parse time + mood]
+    ParseContext --> FetchTasks[Fetch pending tasks]
+    FetchTasks --> HasTasks{Any tasks?}
+
+    HasTasks -->|No| NoTasks["Your slate is clear!<br/>Want to add something?"]
+    HasTasks -->|Yes| FilterTime[Filter by time constraint]
+
+    FilterTime --> HasMatches{Any fit time?}
+    HasMatches -->|No| NoFit["Nothing fits that timeframe.<br/>Got more time?"]
+    HasMatches -->|Yes| ScoreTasks[Score remaining tasks]
+
+    ScoreTasks --> BestScore{Best score > 0.5?}
+    BestScore -->|Yes| Suggest[Suggest task confidently]
+    BestScore -->|No| Unsure["Nothing's a perfect match.<br/>Want to try X anyway?"]
+
+    Suggest --> Present([Present to user])
+```
+
+### Mood Interpretation
+
+```mermaid
+flowchart LR
+    subgraph Input["User Says"]
+        I1["focused / in the zone / sharp"]
+        I2["creative / inspired / brainstormy"]
+        I3["social / energetic / chatty"]
+        I4["tired / low energy / drained"]
+        I5["stressed / anxious / overwhelmed"]
+    end
+
+    subgraph Output["Best Work Type"]
+        O1[Focus Work]
+        O2[Creative Work]
+        O3[Social Work]
+        O4[Independent/Admin]
+        O5[Independent/Admin]
+    end
+
+    I1 --> O1
+    I2 --> O2
+    I3 --> O3
+    I4 --> O4
+    I5 --> O5
+```
+
+## Flow 3: Task Completion
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI Assistant
+    participant N as Notion
+
+    U->>AI: "Done!"
+
+    AI->>N: Update task status → completed
+    AI->>N: Set completedAt timestamp
+    N-->>AI: Success
+
+    AI->>U: "Nice work! How did that feel?"
+
+    alt User provides feedback
+        U->>AI: "Easier than expected"
+        Note over AI: Reduce time estimate for similar tasks
+        AI->>U: "Good to know - I'll remember that. Ready for another?"
+    else User skips
+        U->>AI: "Next task"
+        AI->>U: "What's your energy like now?"
+    end
+```
+
+### Completion Feedback Loop
+
+```mermaid
+flowchart TD
+    Done([User: "Done!"]) --> Update[Update Notion]
+    Update --> SessionCheck{First completion today?}
+
+    SessionCheck -->|Yes| Celebrate["Nice work!"]
+    SessionCheck -->|No| Streak["That's 3 done today!"]
+
+    Celebrate --> Feedback
+    Streak --> Feedback
+
+    Feedback{Ask for feedback?}
+    Feedback -->|Sometimes| Ask["How did that feel?"]
+    Feedback -->|Often| Skip[Skip to next prompt]
+
+    Ask --> Easier[Easier than expected]
+    Ask --> Right[About right]
+    Ask --> Harder[Harder than expected]
+    Ask --> NoAnswer[User ignores]
+
+    Easier --> LearnEasy[Reduce time estimates]
+    Right --> NoChange[Keep estimates]
+    Harder --> LearnHard[Increase estimates]
+    NoAnswer --> Continue
+
+    LearnEasy --> Continue
+    NoChange --> Continue
+    LearnHard --> Continue
+
+    Skip --> Continue[Prompt for next action]
+```
+
+## Flow 4: Task Rejection
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI Assistant
+    participant N as Notion
+
+    AI->>U: "How about the quarterly report?"
+    U->>AI: "Not that one"
+
+    AI->>U: "No problem - what's steering you away from it?"
+    U->>AI: "Not in the mood for deep work"
+
+    Note over AI: Record: mood mismatch for focus work
+
+    AI->>N: Update rejectionNotes
+    AI->>N: Increment rejectionCount
+
+    Note over AI: Re-score with mood constraint
+
+    AI->>U: "Got it. How about organizing your inbox? Still productive but lighter work."
+```
+
+### Rejection Reason Categories
+
+```mermaid
+flowchart TD
+    Reject([User rejects]) --> Why["What's steering you away?"]
+
+    Why --> TooLong["Takes too long"]
+    Why --> WrongMood["Not in the mood"]
+    Why --> Blocked["Waiting on something"]
+    Why --> AlreadyDone["Already done"]
+    Why --> NotFeeling["Just not feeling it"]
+
+    TooLong --> ActionTime[Suggest shorter task<br/>Consider adjusting estimate]
+    WrongMood --> ActionMood[Suggest different work type<br/>Remember mood preference]
+    Blocked --> ActionBlock[Mark task as blocked<br/>Don't suggest until unblocked]
+    AlreadyDone --> ActionDone[Mark task completed<br/>Celebrate the win!]
+    NotFeeling --> ActionGeneral[Log rejection<br/>Try different task]
+```
+
+### Rejection Escalation
+
+```mermaid
+flowchart TD
+    R1[1st Rejection] --> Suggest1[Suggest alternative]
+    Suggest1 --> R2[2nd Rejection]
+    R2 --> Suggest2[Suggest very different task]
+    Suggest2 --> R3[3rd Rejection]
+    R3 --> Escalate["Having trouble finding a match.<br/>Want to tell me what you're in the mood for?"]
+    Escalate --> UserInput[User describes preference]
+    UserInput --> CustomSearch[Search with explicit criteria]
+    CustomSearch --> R4{4th+ Rejection?}
+    R4 -->|Yes| GracefulExit["Maybe now's not the time.<br/>I'll be here when you're ready."]
+    R4 -->|No| Continue[Continue suggesting]
+```
+
+## Flow 5: Special Cases
+
+### Empty Queue
+
+```mermaid
+flowchart TD
+    Request([User: "What should I do?"]) --> Check[Check Notion]
+    Check --> Empty{Any pending tasks?}
+
+    Empty -->|Yes| Normal[Normal selection flow]
+    Empty -->|No| Celebrate["Your slate is clear!"]
+
+    Celebrate --> Prompt["Nothing's waiting for you.<br/>Enjoy it, or add something new?"]
+
+    Prompt --> Add["Add a task"]
+    Prompt --> Leave["Take a break"]
+```
+
+### No Good Match
+
+```mermaid
+flowchart TD
+    Request([User: "15 min, feeling focused"]) --> Check[Check tasks]
+    Check --> NoMatch{Any tasks match?}
+
+    NoMatch -->|All too long| TimeIssue["Nothing fits 15 minutes.<br/>Your shortest task is 30 min."]
+    NoMatch -->|Wrong mood| MoodIssue["No focus tasks available.<br/>Want to try something else?"]
+    NoMatch -->|Both| BothIssue["Tough to find a match right now."]
+
+    TimeIssue --> Options1["Got more time?<br/>Or add a quick task?"]
+    MoodIssue --> Options2["How about [other type]<br/>Or change your mood?"]
+    BothIssue --> Options3["Want to add something<br/>or come back later?"]
+```
+
+### User Asks About Their List
+
+```mermaid
+flowchart TD
+    Ask([User: "What's in my list?"]) --> Philosophy[Explain philosophy]
+
+    Philosophy --> Response["I keep track so you don't have to!<br/>You've got 8 tasks waiting.<br/>Ready to knock one out?"]
+
+    Response --> Follow{User follows up?}
+    Follow -->|Insists| Gentle["The point is not having to look.<br/>Trust me - I'll surface the right one."]
+    Follow -->|Accepts| Selection[Normal selection flow]
+```
+
+## Conversation Tone Guidelines
+
+```mermaid
+mindmap
+  root((Tone))
+    Casual
+      "Got it"
+      "Nice work"
+      "No problem"
+    Brief
+      One question at a time
+      Short confirmations
+      Minimal small talk
+    Collaborative
+      "Help me learn"
+      "What's steering you away?"
+      Never apologize excessively
+    Confident
+      Present suggestions directly
+      Trust the algorithm
+      Don't second-guess
+```
+
+## Example Full Session
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI
+
+    U->>AI: Hey
+    AI->>U: Hey! Ready to add a task or work on something?
+
+    U->>AI: I need to email the team about the offsite
+    AI->>U: Got it - is there a deadline for this?
+    U->>AI: Should go out today
+    AI->>U: Added - social task, ~15 min, high urgency. What else?
+
+    U->>AI: Also need to book travel for the offsite
+    AI->>U: Added - independent task, ~30 min. Ready to work or keep adding?
+
+    U->>AI: I've got 20 minutes before a meeting
+    AI->>U: Perfect - how about sending that team email? It's short and urgent.
+    U->>AI: Yeah let's do it
+    AI->>U: Great, it's yours. Let me know when you're done!
+
+    Note over U,AI: 12 minutes later
+
+    U->>AI: Done
+    AI->>U: Nice! That's 1 down today. Got time for another quick one?
+    U->>AI: No, meeting's starting
+    AI->>U: No worries - catch you later!
+```
