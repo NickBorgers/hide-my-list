@@ -55,19 +55,34 @@ flowchart LR
         subgraph models["models/"]
             Task[task.go]
         end
+        subgraph rewards["rewards/"]
+            RewardEngine[engine.go]
+            RewardDelivery[delivery.go]
+        end
     end
 
     subgraph Entry["cmd/server/"]
         Main[main.go]
     end
 
+    subgraph Integrations["External Integrations"]
+        HomeAudio[Home Audio<br/>Sonos/HomePod/Echo]
+        SMS[SMS/Messaging<br/>Twilio/iMessage]
+        MediaAPIs[Media APIs<br/>Giphy/Sora]
+    end
+
     Main --> Handlers
     Handlers --> AIClient
     Handlers --> NotionClient
+    Handlers --> RewardEngine
     AIClient --> Prompts
     NotionClient --> Tasks
     Tasks --> Task
     AIClient --> Task
+    RewardEngine --> RewardDelivery
+    RewardDelivery --> HomeAudio
+    RewardDelivery --> SMS
+    RewardDelivery --> MediaAPIs
 ```
 
 ## Request Flow
@@ -79,6 +94,8 @@ sequenceDiagram
     participant Server as Go Server
     participant Claude as Claude API
     participant Notion as Notion API
+    participant HomeAudio as Home Audio
+    participant SMS as SMS Service
 
     User->>UI: Types message
     UI->>Server: POST /api/chat
@@ -111,7 +128,15 @@ sequenceDiagram
             end
         end
         Notion-->>Server: Success
-        Server-->>UI: Celebration message
+        Server->>Server: Trigger Reward Engine
+        par Reward Delivery
+            Server-->>UI: Emoji celebration + GIF
+            Server->>HomeAudio: Play victory music
+            Server->>SMS: Text significant other
+        end
+        opt High Intensity Achievement
+            Server-->>UI: Suggest fun outing
+        end
     else Task Rejection
         Server->>Notion: Update rejection notes
         Server->>Claude: Select alternative
@@ -220,12 +245,28 @@ flowchart TB
 
 ## Environment Variables
 
+### Core Services
+
 | Variable | Purpose |
 |----------|---------|
 | `ANTHROPIC_API_KEY` | Claude API authentication |
 | `NOTION_API_KEY` | Notion integration token |
 | `NOTION_DATABASE_ID` | Tasks database identifier |
 | `PORT` | HTTP server port (default: 8080) |
+
+### Reward System (Optional)
+
+| Variable | Purpose |
+|----------|---------|
+| `TWILIO_ACCOUNT_SID` | Twilio account for SMS notifications |
+| `TWILIO_AUTH_TOKEN` | Twilio authentication token |
+| `TWILIO_PHONE_NUMBER` | Sender phone number for SMS |
+| `SONOS_API_KEY` | Sonos home audio integration |
+| `HOME_ASSISTANT_URL` | Home Assistant endpoint for audio control |
+| `HOME_ASSISTANT_TOKEN` | Home Assistant authentication |
+| `GIPHY_API_KEY` | Giphy API for celebration GIFs |
+| `SORA_API_KEY` | OpenAI Sora for AI-generated celebration videos |
+| `OPENWEATHER_API_KEY` | Weather API for outing suggestions |
 
 ## Security Considerations
 

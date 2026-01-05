@@ -189,7 +189,10 @@ flowchart LR
 sequenceDiagram
     participant U as User
     participant AI as AI Assistant
+    participant R as Reward Engine
     participant N as Notion
+    participant HA as Home Audio
+    participant SMS as SMS Service
 
     U->>AI: "Done!"
 
@@ -197,7 +200,23 @@ sequenceDiagram
     AI->>N: Set completedAt timestamp
     N-->>AI: Success
 
-    AI->>U: "Nice work! How did that feel?"
+    AI->>R: Trigger reward evaluation
+    R->>R: Calculate intensity score
+
+    par Parallel Reward Delivery
+        R->>AI: Emoji celebration + GIF
+        R->>HA: Play victory music
+        R->>SMS: Text significant other
+    end
+
+    AI->>U: "CRUSHED IT! 🔥💪✨ [GIF: Taylor Swift party]"
+
+    Note over HA: "We Are The Champions" plays
+
+    alt High intensity achievement
+        R->>AI: Generate outing suggestion
+        AI->>U: "You've earned it! Coffee at Luna Cafe? ☕"
+    end
 
     alt User provides feedback
         U->>AI: "Easier than expected"
@@ -209,18 +228,66 @@ sequenceDiagram
     end
 ```
 
+### Reward Delivery System
+
+The completion flow triggers a multi-channel reward system designed to maximize dopamine delivery:
+
+```mermaid
+flowchart TD
+    Done([User: "Done!"]) --> Evaluate[Evaluate Achievement]
+
+    Evaluate --> Score[Calculate Intensity Score]
+    Score --> Level{Intensity Level}
+
+    Level -->|Low| LowReward[Emoji only<br/>"Nice! ✨"]
+    Level -->|Medium| MedReward[Emoji + GIF<br/>"Crushing it! 🎉💪"]
+    Level -->|High| HighReward[Emoji + GIF + Music + Text SO]
+    Level -->|Epic| EpicReward[All rewards + AI Video + Outing]
+
+    subgraph SystemRewards["System-Generated Rewards"]
+        Emoji[Emoji Explosion]
+        GIF[Animated GIF<br/>Taylor Swift, celebrations]
+        Video[AI Video via Sora]
+        Music[Home Audio Playback<br/>Sonos/HomePod/Echo]
+    end
+
+    subgraph InterpersonalRewards["Interpersonal Rewards"]
+        TextSO[Text Significant Other<br/>"Your partner crushed a big task!"]
+        Outing[Suggest Fun Outing<br/>"Coffee at your favorite spot?"]
+    end
+
+    HighReward --> SystemRewards
+    HighReward --> InterpersonalRewards
+    EpicReward --> SystemRewards
+    EpicReward --> InterpersonalRewards
+```
+
+### Intensity Scoring
+
+| Factor | Weight | Examples |
+|--------|--------|----------|
+| Task difficulty | 30% | Time estimate, energy required |
+| Current streak | 25% | 3+ tasks = bonus |
+| Task type | 20% | Parent complete = major bonus |
+| Time of day | 15% | End of day = bonus |
+| Recent history | 10% | Diminishing returns if many recent rewards |
+
 ### Completion Feedback Loop
 
 ```mermaid
 flowchart TD
     Done([User: "Done!"]) --> Update[Update Notion]
-    Update --> SessionCheck{First completion today?}
+    Update --> Reward[Trigger Reward Engine]
 
-    SessionCheck -->|Yes| Celebrate["Nice work!"]
-    SessionCheck -->|No| Streak["That's 3 done today!"]
+    Reward --> SessionCheck{First completion today?}
 
-    Celebrate --> Feedback
-    Streak --> Feedback
+    SessionCheck -->|Yes| Celebrate["FIRST ONE DOWN! 🎯✨"]
+    SessionCheck -->|No| Streak["That's 3 done today! 🔥💪🎉"]
+
+    Celebrate --> DeliverRewards
+    Streak --> DeliverRewards
+
+    DeliverRewards[Deliver Multi-Channel Rewards] --> Feedback
 
     Feedback{Ask for feedback?}
     Feedback -->|Sometimes| Ask["How did that feel?"]
@@ -240,8 +307,15 @@ flowchart TD
     NoChange --> Continue
     LearnHard --> Continue
 
-    Skip --> Continue[Prompt for next action]
+    Skip --> Continue{Continue working?}
+    Continue -->|Yes| NextTask[Get another task]
+    Continue -->|No| OutingCheck{High intensity?}
+    OutingCheck -->|Yes| SuggestOuting["You've earned a break!<br/>How about [favorite_activity]?"]
+    OutingCheck -->|No| End([End session])
+    SuggestOuting --> End
 ```
+
+See [reward-system.md](./reward-system.md) for complete reward system documentation.
 
 ## Flow 4: Task Rejection
 
@@ -479,6 +553,8 @@ mindmap
 sequenceDiagram
     participant U as User
     participant AI as AI
+    participant HA as Home Audio
+    participant SMS as SMS
 
     U->>AI: Hey
     AI->>U: Hey! Ready to add a task or work on something?
@@ -499,7 +575,14 @@ sequenceDiagram
     Note over U,AI: 12 minutes later
 
     U->>AI: Done
-    AI->>U: Nice! That's 1 down today. Got time for another quick one?
+
+    par Celebration
+        AI->>U: FIRST ONE DOWN! 🎯✨💪 [GIF: office high five]
+        HA->>HA: Plays victory jingle (15 sec)
+        SMS->>SMS: "[Partner], your person just knocked out their first task! 🙌"
+    end
+
+    AI->>U: Got time for another quick one?
     U->>AI: No, meeting's starting
-    AI->>U: No worries - catch you later!
+    AI->>U: No worries - you're off to a great start! ✨
 ```

@@ -419,7 +419,24 @@ flowchart LR
 ```mermaid
 flowchart TD
     Done([User: "Done!"]) --> Update[Update Notion status]
-    Update --> Feedback{Ask for feedback?}
+    Update --> Reward[Trigger Reward Engine]
+
+    Reward --> Calculate[Calculate intensity score]
+    Calculate --> Deliver[Deliver rewards in parallel]
+
+    subgraph RewardDelivery["Reward Delivery"]
+        Emoji[Emoji celebration]
+        GIF[Animated GIF]
+        Music[Play music via home audio]
+        TextSO[Text significant other]
+    end
+
+    Deliver --> Emoji
+    Deliver --> GIF
+    Deliver --> Music
+    Deliver --> TextSO
+
+    Deliver --> Feedback{Ask for feedback?}
 
     Feedback -->|Optional| HowFelt["How did that feel?"]
     Feedback -->|Skip| Summary
@@ -438,8 +455,25 @@ flowchart TD
 
     Summary --> Prompt{Continue?}
     Prompt -->|Yes| NextTask([Get another task])
-    Prompt -->|No| Celebrate([End session])
+    Prompt -->|No| Outing{High intensity?}
+    Outing -->|Yes| SuggestOuting[Suggest fun outing]
+    Outing -->|No| End([End session])
+    SuggestOuting --> End
 ```
+
+### Reward Intensity Scaling
+
+The reward system scales celebrations based on achievement significance:
+
+| Trigger | Intensity | Rewards Activated |
+|---------|-----------|-------------------|
+| Quick task (< 15 min) | Low | Emoji only |
+| Standard task | Medium | Emoji + maybe GIF |
+| Focus/difficult task | High | Emoji + GIF + Music + Text SO |
+| Parent task complete | Epic | All rewards + AI video + Outing suggestion |
+| All tasks cleared | Epic | Maximum celebration |
+
+See [reward-system.md](./reward-system.md) for complete reward system documentation.
 
 ## Complete Task Journey Example
 
@@ -461,5 +495,10 @@ journey
     section Execution
       User reviews proposal: 4: User
       User marks done: 5: User
-      AI celebrates: 5: AI
+    section Celebration
+      Emoji explosion displayed: 5: AI
+      GIF shows Taylor Swift dancing: 5: AI
+      Victory song plays on speakers: 5: System
+      Partner receives celebration text: 5: System
+      AI suggests coffee at favorite cafe: 4: AI
 ```
