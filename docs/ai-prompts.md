@@ -72,6 +72,7 @@ flowchart TD
     Classify --> DONE["COMPLETE<br/>Finished task"]
     Classify --> NOPE["REJECT<br/>Doesn't want this"]
     Classify --> CANT["CANNOT_FINISH<br/>Task too large"]
+    Classify --> CHECKIN["CHECK_IN<br/>System follow-up"]
     Classify --> CHAT["CHAT<br/>General"]
 ```
 
@@ -86,12 +87,15 @@ Categories:
 - COMPLETE: User finished their current task (says done, finished, completed)
 - REJECT: User doesn't want the suggested task (says no, not that one, something else)
 - CANNOT_FINISH: User indicates current task is too large or overwhelming (too big, can't finish, overwhelming)
+- CHECK_IN: System-initiated follow-up (triggered by timer, not user message)
 - CHAT: General conversation or questions
 
 Message: "{user_message}"
 
 Intent:
 ```
+
+**Note:** CHECK_IN is not detected from user messages. It is triggered automatically by the client when a task check-in timer expires. The server recognizes CHECK_IN requests by a special flag in the request payload.
 
 ### Intent Detection Examples
 
@@ -615,6 +619,133 @@ sequenceDiagram
 
 ---
 
+## Module 6: Check-In Handling
+
+The check-in module handles proactive follow-ups when a user may have forgotten about their active task. This is triggered by a client-side timer set to 1.25x the task's time estimate.
+
+```mermaid
+flowchart TD
+    Timer([Timer expires]) --> CheckActive{Task still in_progress?}
+
+    CheckActive -->|No| Skip[Skip check-in]
+    CheckActive -->|Yes| SendCheckIn[Send check-in message]
+
+    SendCheckIn --> UserResponse[User responds]
+
+    UserResponse --> Done["Done / Finished"]
+    UserResponse --> StillWorking["Still working"]
+    UserResponse --> Distracted["Got distracted"]
+    UserResponse --> NeedMore["Need more time"]
+
+    Done --> Complete[Mark task completed]
+    StillWorking --> Encourage[Encourage, reset timer]
+    Distracted --> Nudge[Gentle nudge back]
+    NeedMore --> Acknowledge[Acknowledge, ask how long]
+```
+
+### Check-In Prompt
+
+```
+The user accepted a task but the expected completion time has passed.
+Check in on their progress.
+
+ACTIVE TASK: {task_title}
+TIME ESTIMATE: {time_estimate} minutes
+TIME ELAPSED: {elapsed_minutes} minutes
+TASK CONTEXT: {ai_context}
+
+Generate a brief, friendly check-in message. Keep it casual and non-judgmental.
+The user may have:
+- Completed the task and forgot to say so
+- Still be working on it
+- Gotten distracted
+- Needed more time than estimated
+
+OUTPUT (JSON):
+{
+  "check_in_message": "..." (brief, friendly follow-up question)
+}
+```
+
+### Check-In Response Prompt
+
+```
+The user responded to a check-in about their active task.
+
+TASK: {task_title}
+USER RESPONSE: "{user_response}"
+
+Classify the response and determine next action.
+
+RESPONSE CATEGORIES:
+- done: User completed the task
+- still_working: User is still actively working
+- distracted: User got sidetracked
+- need_more_time: User needs additional time
+- abandoned: User wants to stop working on this task
+
+OUTPUT (JSON):
+{
+  "response_category": "...",
+  "task_update": {
+    "status": "in_progress" | "completed" | "pending",
+    "note": "..." (optional note to append)
+  },
+  "reset_timer": true | false,
+  "new_timer_minutes": null | number,
+  "user_message": "..." (response to user)
+}
+```
+
+### Check-In Message Templates
+
+| Scenario | Example Message |
+|----------|-----------------|
+| First check-in | "How's the quarterly report going? Still at it?" |
+| User says done | "Nice! Marking that off. Ready for another?" |
+| User still working | "No rush - keep at it! I'll check back in a bit." |
+| User got distracted | "Happens to everyone. Want to jump back in, or try something else?" |
+| User needs more time | "No problem. About how much longer do you think?" |
+| User abandons | "Got it - I'll put that back in the queue. What next?" |
+
+### Check-In Timing
+
+```mermaid
+flowchart LR
+    subgraph Timing["Timer Calculation"]
+        Estimate["Time Estimate"] --> Multiplier["× 1.25"]
+        Multiplier --> CheckInTime["Check-In Delay"]
+    end
+
+    subgraph Examples["Examples"]
+        E1["15 min task → 18.75 min"]
+        E2["30 min task → 37.5 min"]
+        E3["60 min task → 75 min"]
+        E4["120 min task → 150 min"]
+    end
+```
+
+### Repeated Check-Ins
+
+If the user says they're still working or need more time, the timer resets:
+
+```mermaid
+flowchart TD
+    CheckIn1["1st check-in at 1.25x"] --> StillWorking["User: Still working"]
+    StillWorking --> Reset1["Reset timer for 0.5x original"]
+    Reset1 --> CheckIn2["2nd check-in"]
+    CheckIn2 --> Response2{Response?}
+    Response2 -->|Still working| Reset2["Reset timer for 0.25x"]
+    Response2 -->|Done| Complete[Mark complete]
+    Response2 -->|Abandon| Return[Return to queue]
+    Reset2 --> CheckIn3["3rd check-in (final)"]
+    CheckIn3 --> Gentle["Gentle: Want to take a break?"]
+```
+
+After 3 check-ins without completion, the system gently suggests taking a break rather than continuing to nag.
+
+---
+
 ## Structured Output Handling
 
 ### JSON Extraction Pattern
@@ -732,6 +863,11 @@ stateDiagram-v2
 
     Active --> Idle: Task completed
     Active --> Selection: Task abandoned
+    Active --> CheckingIn: Timer expires
+
+    CheckingIn --> Active: Still working
+    CheckingIn --> Idle: Task completed
+    CheckingIn --> Selection: Task abandoned
 ```
 
 ### State Data
@@ -741,7 +877,8 @@ stateDiagram-v2
 | Idle | None |
 | Intake | Partial task data, conversation history |
 | Selection | Current task context |
-| Active | Active task ID, start time |
+| Active | Active task ID, start time, check-in count |
+| CheckingIn | Active task ID, elapsed time, check-in count |
 
 ---
 
