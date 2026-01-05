@@ -26,11 +26,16 @@ stateDiagram-v2
     Rejected --> Pending: Rejection recorded
     Rejected --> Selected: Alternative suggested
 
+    InProgress --> CheckIn: Timer expires (1.25x estimate)
     InProgress --> Completed: User finishes
     InProgress --> Pending: User abandons
     InProgress --> CannotFinish: Task too large
 
     CannotFinish --> Breakdown: Break into smaller pieces
+
+    CheckIn --> Completed: User confirms done
+    CheckIn --> InProgress: User still working
+    CheckIn --> Pending: User abandons
 
     Completed --> [*]
 ```
@@ -46,6 +51,7 @@ stateDiagram-v2
 | Pending | Task saved, waiting to be selected | `pending` |
 | Selected | Task suggested to user, awaiting response | `pending` |
 | In Progress | User actively working on task | `in_progress` |
+| Check-In | System following up on task progress | `in_progress` |
 | Rejected | User declined, giving feedback | `pending` |
 | Cannot Finish | User indicates task is too large | `in_progress` (triggers breakdown) |
 | Completed | Task finished | `completed` |
@@ -300,7 +306,91 @@ stateDiagram-v2
     Completed --> [*]
 ```
 
-## Phase 5: Rejection Handling
+## Phase 5: Check-In Follow-Up
+
+When a user accepts a task, the system sets a timer for 1.25x the estimated time. If the user hasn't marked the task complete, the system proactively checks in.
+
+```mermaid
+flowchart TD
+    Accept([User accepts task]) --> SetTimer[Set timer: estimate × 1.25]
+    SetTimer --> Wait[Timer running...]
+
+    Wait --> TimerFires{Timer expires}
+    Wait --> UserDone[User says "Done!"]
+
+    UserDone --> ClearTimer[Clear timer]
+    ClearTimer --> Complete([Mark completed])
+
+    TimerFires --> CheckStatus{Task still in_progress?}
+
+    CheckStatus -->|No| Skip[Already completed/abandoned]
+    CheckStatus -->|Yes| AskUser["How's [task] going?"]
+
+    AskUser --> Response{User response}
+
+    Response --> Done["Done!"]
+    Response --> Working["Still working"]
+    Response --> Distracted["Got distracted"]
+    Response --> NeedMore["Need more time"]
+    Response --> Abandon["Want to stop"]
+
+    Done --> Complete
+    Working --> ResetTimer1[Reset timer: 0.5x original]
+    Distracted --> Nudge["Want to jump back in?"]
+    NeedMore --> AskHow["How much longer?"]
+    Abandon --> ReturnQueue[Return to pending]
+
+    ResetTimer1 --> Wait2[Timer running...]
+    Nudge --> Response2{User choice}
+    AskHow --> NewTime[User gives time]
+
+    Response2 -->|Yes| ResetTimer2[Reset timer]
+    Response2 -->|No| ReturnQueue
+
+    NewTime --> ResetTimer3[Set new timer]
+    ResetTimer2 --> Wait2
+    ResetTimer3 --> Wait2
+
+    Wait2 --> CheckIn2{2nd check-in}
+    CheckIn2 --> FinalResponse{Response?}
+
+    FinalResponse -->|Done| Complete
+    FinalResponse -->|Still working| CheckIn3[3rd check-in]
+    FinalResponse -->|Abandon| ReturnQueue
+
+    CheckIn3 --> Gentle["Maybe take a break?<br/>I'll be here when you're ready."]
+```
+
+### Check-In Timing Examples
+
+| Time Estimate | First Check-In | Subsequent Check-Ins |
+|---------------|----------------|----------------------|
+| 15 min | 18.75 min | +7.5 min, +3.75 min |
+| 30 min | 37.5 min | +15 min, +7.5 min |
+| 60 min | 75 min | +30 min, +15 min |
+| 120 min | 150 min | +60 min, +30 min |
+
+### Check-In Response Handling
+
+| Response | Action | Timer |
+|----------|--------|-------|
+| "Done!" | Mark completed | Clear |
+| "Still working" | Encourage | Reset to 0.5x |
+| "Got distracted" | Gentle nudge | Reset to 0.5x if continuing |
+| "Need X more minutes" | Acknowledge | Set to X × 1.25 |
+| "Want to stop" | Return to queue | Clear |
+
+### Maximum Check-Ins
+
+The system limits check-ins to 3 per task session to avoid nagging:
+
+1. **1st check-in**: Friendly inquiry
+2. **2nd check-in**: Brief follow-up
+3. **3rd check-in**: Suggest taking a break, stop checking in
+
+If the user returns later and re-accepts the same task, the check-in count resets.
+
+## Phase 6: Rejection Handling
 
 ```mermaid
 flowchart TD

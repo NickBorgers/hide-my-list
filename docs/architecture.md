@@ -117,7 +117,11 @@ sequenceDiagram
         Notion-->>Server: Task list
         Server->>Claude: Select best match
         Claude-->>Server: Selected task + reasoning
-        Server-->>UI: Task suggestion
+        Server-->>UI: Task suggestion + time_estimate
+    else Task Acceptance
+        Server->>Notion: Update status to in_progress
+        Server-->>UI: Confirmation + check_in_delay
+        UI->>UI: Set check-in timer
     else Task Completion
         Server->>Notion: Update status
         alt Is Sub-task
@@ -134,6 +138,7 @@ sequenceDiagram
             Server->>HomeAudio: Play victory music
             Server->>SMS: Text significant other
         end
+        UI->>UI: Clear check-in timer
         opt High Intensity Achievement
             Server-->>UI: Suggest fun outing
         end
@@ -153,9 +158,38 @@ sequenceDiagram
         Server->>Notion: Update parent + create sub-tasks
         Notion-->>Server: Success
         Server-->>UI: Offer first remaining sub-task
+    else Check-In (timer triggered)
+        UI->>Server: POST /api/chat (CHECK_IN)
+        Server->>Notion: Verify task still in_progress
+        Server->>Claude: Generate follow-up
+        Claude-->>Server: Check-in message
+        Server-->>UI: "How's [task] going?"
     end
 
     UI-->>User: Display response
+```
+
+## Check-In Timer Flow
+
+```mermaid
+sequenceDiagram
+    participant UI as Chat UI
+    participant Timer as JS Timer
+    participant Server as Go Server
+
+    Note over UI,Server: User accepts task (time_estimate: 30 min)
+
+    UI->>Timer: Set timer for 37.5 min (1.25x)
+    Timer-->>UI: Timer running
+
+    alt User completes before timer
+        UI->>Server: "Done!"
+        UI->>Timer: Clear timer
+    else Timer fires
+        Timer->>UI: Timer expired
+        UI->>Server: CHECK_IN message
+        Server-->>UI: "How's [task] going?"
+    end
 ```
 
 ## Data Flow
