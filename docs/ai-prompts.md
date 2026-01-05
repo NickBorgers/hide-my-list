@@ -72,6 +72,7 @@ flowchart TD
     Classify --> DONE["COMPLETE<br/>Finished task"]
     Classify --> NOPE["REJECT<br/>Doesn't want this"]
     Classify --> CANT["CANNOT_FINISH<br/>Task too large"]
+    Classify --> HELP["NEED_HELP<br/>Wants breakdown help"]
     Classify --> CHECKIN["CHECK_IN<br/>System follow-up"]
     Classify --> CHAT["CHAT<br/>General"]
 ```
@@ -87,6 +88,7 @@ Categories:
 - COMPLETE: User finished their current task (says done, finished, completed)
 - REJECT: User doesn't want the suggested task (says no, not that one, something else)
 - CANNOT_FINISH: User indicates current task is too large or overwhelming (too big, can't finish, overwhelming)
+- NEED_HELP: User wants help breaking down or starting their current task (how do I start, what's next, I'm stuck, break this down)
 - CHECK_IN: System-initiated follow-up (triggered by timer, not user message)
 - CHAT: General conversation or questions
 
@@ -112,6 +114,11 @@ Intent:
 | "This is too big" | CANNOT_FINISH |
 | "I can't finish this in one go" | CANNOT_FINISH |
 | "This is overwhelming" | CANNOT_FINISH |
+| "How do I start?" | NEED_HELP |
+| "What's the first step?" | NEED_HELP |
+| "I'm stuck" | NEED_HELP |
+| "Break this down for me" | NEED_HELP |
+| "What should I do first?" | NEED_HELP |
 | "How does this work?" | CHAT |
 | "Hello" | CHAT |
 
@@ -144,10 +151,13 @@ flowchart TD
 ### Task Intake Prompt
 
 ```
-The user wants to add a task. Extract details, infer labels, and evaluate complexity.
+The user wants to add a task. Extract details, infer labels, and ALWAYS generate sub-tasks.
 
 User said: "{user_message}"
 Previous context: {conversation_history}
+
+CORE PRINCIPLE: Users interpret vague goals as infinite and avoid them.
+Every task MUST have explicit sub-tasks that define exactly what "done" looks like.
 
 Analyze the task and provide structured output:
 
@@ -161,17 +171,26 @@ TASK_ANALYSIS:
 - time_confidence: (0.0-1.0)
 - energy_required: (high|medium|low)
 
-COMPLEXITY EVALUATION:
-Determine if this task needs breakdown into sub-tasks.
-- needs_breakdown: true if task is vague, multi-step, or estimated > 90 minutes
-- If needs_breakdown=true, create actionable sub-tasks (HIDDEN from user)
-- Each sub-task should be completable in 15-90 minutes
-- Reframe large tasks as their first achievable step
+SUB-TASK GENERATION (ALWAYS REQUIRED):
+Every task gets explicit sub-tasks, regardless of complexity.
+- Quick tasks (15-30 min): 2-3 inline steps shown with the task
+- Standard tasks (30-60 min): 3-5 inline steps
+- Large tasks (60+ min): Create as hidden Notion sub-tasks
 
-BREAKDOWN SIGNALS (needs_breakdown=true):
+For EVERY task, generate:
+- Specific, actionable steps
+- Clear "done" criteria for each step
+- Time estimate for each step
+- Logical sequence
+
+STORAGE DECISION (use_hidden_subtasks):
+- true: Store as separate Notion tasks (for tasks > 60 min or multi-phase work)
+- false: Store as inline steps in task description (for tasks ≤ 60 min)
+
+BREAKDOWN SIGNALS (use_hidden_subtasks=true):
 - Vague scope: "complete the project", "finish the report", "work on X"
 - Multi-phase: tasks requiring research → draft → review → finalize
-- Long duration: estimated > 90 minutes
+- Long duration: estimated > 60 minutes
 - Multiple deliverables: "prepare and send", "design and implement"
 
 DECISION:
@@ -190,46 +209,83 @@ OUTPUT (JSON):
   "energy_required": "...",
   "needs_clarification": true|false,
   "clarification_question": "..." or null,
-  "needs_breakdown": true|false,
-  "sub_tasks": [...] or null,
-  "presentable_title": "..." (first actionable step if breakdown needed),
-  "confirmation_message": "..." (brief confirmation if saving)
+  "use_hidden_subtasks": true|false,
+  "sub_tasks": [
+    {
+      "title": "...",
+      "time_estimate_minutes": 0,
+      "done_criteria": "what 'done' looks like",
+      "sequence": 1
+    }
+  ],
+  "inline_steps": "1. First step\n2. Second step\n3. Third step" (if use_hidden_subtasks=false),
+  "presentable_title": "..." (first actionable step if use_hidden_subtasks=true),
+  "confirmation_message": "..." (brief confirmation including steps summary)
 }
 
-IMPORTANT: Sub-tasks are NEVER shown to the user. Only present the first
-actionable step. The user sees "Added - focus work, ~30 min" not the full breakdown.
+CONFIRMATION MESSAGE FORMAT:
+- For inline steps: "Added - [work type], ~[time]. Here's your plan: 1) X, 2) Y, 3) Z"
+- For hidden sub-tasks: "Added - [work type], ~[time]. First step: [step]. This is 1 of [N] steps."
+
+IMPORTANT: The user should always see specific next actions, never just "Added - focus work, ~30 min".
+Every task confirmation includes the concrete steps they'll take.
 ```
 
-### Complexity Evaluation Rules
+### Storage Decision Rules
+
+All tasks get sub-tasks. The decision is only about HOW to store them:
 
 ```mermaid
 flowchart TD
-    subgraph Signals["Breakdown Signals"]
+    subgraph Always["All Tasks Get Sub-tasks"]
+        Generate["Generate 2-5 actionable steps<br/>for EVERY task"]
+    end
+
+    subgraph Signals["Hidden Storage Triggers"]
         Vague["Vague scope<br/>'complete', 'finish', 'work on'"]
         MultiPhase["Multi-phase work<br/>research + draft + review"]
-        LongDuration["Long duration<br/>> 90 minutes"]
+        LongDuration["Long duration<br/>> 60 minutes"]
         MultiDeliverable["Multiple outputs<br/>'prepare and send'"]
     end
 
-    subgraph Decision["Breakdown Decision"]
-        NeedsBreakdown[needs_breakdown = true]
-        Manageable[needs_breakdown = false]
+    subgraph Decision["Storage Decision"]
+        Hidden["use_hidden_subtasks = true<br/>Store as Notion sub-tasks"]
+        Inline["use_hidden_subtasks = false<br/>Store as inline steps"]
     end
 
-    Vague --> NeedsBreakdown
-    MultiPhase --> NeedsBreakdown
-    LongDuration --> NeedsBreakdown
-    MultiDeliverable --> NeedsBreakdown
+    Generate --> Signals
+    Vague --> Hidden
+    MultiPhase --> Hidden
+    LongDuration --> Hidden
+    MultiDeliverable --> Hidden
+
+    Generate -->|"Short, simple tasks"| Inline
 ```
 
-### Task Reframing Examples
+### Task Examples (All Tasks Get Sub-tasks)
+
+**Quick Tasks (Inline Steps):**
+
+| User Says | Confirmation Message |
+|-----------|---------------------|
+| "Call mom" | "Added - social, ~15 min. Here's your plan: 1) Find quiet spot, 2) Make call, 3) Note any follow-ups" |
+| "Pay electricity bill" | "Added - independent, ~10 min. Steps: 1) Open banking app, 2) Find payee, 3) Enter amount and pay" |
+| "Reply to Jake's email" | "Added - social, ~10 min. Steps: 1) Read his email, 2) Draft response, 3) Review and send" |
+
+**Standard Tasks (Inline Steps):**
+
+| User Says | Confirmation Message |
+|-----------|---------------------|
+| "Review the proposal" | "Added - focus, ~45 min. Plan: 1) Read intro, 2) Check numbers, 3) Note concerns, 4) Draft feedback" |
+| "Prepare for meeting" | "Added - focus, ~30 min. Steps: 1) Review agenda, 2) Gather materials, 3) Note talking points" |
+
+**Large Tasks (Hidden Sub-tasks):**
 
 | User Says | Presentable Title | Hidden Sub-tasks |
 |-----------|-------------------|------------------|
-| "Complete the project" | "Draft project outline" | 1. Draft outline, 2. First revision, 3. Review, 4. Finalize |
-| "Finish the report" | "Write report introduction" | 1. Introduction, 2. Body sections, 3. Conclusion, 4. Edit |
-| "Plan the event" | "List event requirements" | 1. Requirements, 2. Venue research, 3. Budget, 4. Timeline |
-| "Prepare presentation" | "Outline presentation" | 1. Outline, 2. Draft slides, 3. Add visuals, 4. Practice |
+| "Complete the project" | "Draft project outline - 30 min (1 of 4 steps)" | 1. Draft outline, 2. First revision, 3. Review, 4. Finalize |
+| "Finish the report" | "Write report introduction - 20 min (1 of 4 steps)" | 1. Introduction, 2. Body sections, 3. Conclusion, 4. Edit |
+| "Plan the event" | "List event requirements - 20 min (1 of 5 steps)" | 1. Requirements, 2. Venue research, 3. Budget, 4. Timeline, 5. Send invites |
 
 ### Work Type Inference Rules
 
@@ -743,6 +799,152 @@ flowchart TD
 ```
 
 After 3 check-ins without completion, the system gently suggests taking a break rather than continuing to nag.
+
+---
+
+## Module 7: Breakdown Assistance (NEED_HELP)
+
+When a user signals they need help starting or continuing a task, the agent provides specific, actionable guidance. The core principle: **users interpret vague goals as infinite, and thus avoid them.**
+
+```mermaid
+flowchart TD
+    NeedHelp([User: "How do I start?"]) --> CheckActive{Has active task?}
+    CheckActive -->|Yes| AnalyzeState[Determine where user is]
+    CheckActive -->|No| SuggestTask[Suggest getting a task first]
+
+    AnalyzeState --> GenerateSteps[Generate concrete next steps]
+    GenerateSteps --> DetermineLevel{User confidence level?}
+
+    DetermineLevel -->|Confident| Overview[Provide step overview]
+    DetermineLevel -->|Uncertain| CurrentStep[Focus on current step only]
+    DetermineLevel -->|Stuck| MicroAction[Provide micro-action]
+```
+
+### Breakdown Assistance Prompt
+
+```
+The user needs help with their current task. Provide specific, actionable guidance.
+
+CURRENT TASK: {task_title}
+TASK SUB-STEPS: {inline_steps or sub_tasks}
+USER MESSAGE: "{user_message}"
+CONVERSATION CONTEXT: {recent_messages}
+
+ASSISTANCE PHILOSOPHY:
+- Users avoid vague goals because they feel infinite
+- Concrete, specific actions feel achievable
+- The smaller the first step, the easier to start
+- Always know what "done" looks like for each step
+
+RESPONSE LEVELS (choose based on user signals):
+1. OVERVIEW: List all steps with time estimates (confident user)
+2. CURRENT_STEP: Focus on just the next step (uncertain user)
+3. MICRO_ACTION: Provide the tiniest possible first action (stuck user)
+4. HAND_HOLDING: Extremely detailed, click-by-click guidance (very stuck)
+
+USER SIGNAL DETECTION:
+- Confident: "What are the steps?", "Walk me through it"
+- Uncertain: "I guess", hesitation, qualified acceptance
+- Stuck: "I'm stuck", "I don't know where to start"
+- Very stuck: Repeated help requests, frustration signals
+
+OUTPUT (JSON):
+{
+  "detected_confidence": "confident|uncertain|stuck|very_stuck",
+  "response_level": "overview|current_step|micro_action|hand_holding",
+  "current_step_number": 1,
+  "total_steps": 4,
+  "steps_breakdown": [
+    {
+      "step_number": 1,
+      "action": "specific action description",
+      "time_estimate": "5 min",
+      "done_criteria": "what 'done' looks like"
+    }
+  ],
+  "immediate_action": "the very next thing to do right now",
+  "user_message": "conversational response with appropriate detail level",
+  "encouragement": "optional brief encouragement if user seems stuck"
+}
+```
+
+### Proactive Assistance Triggers
+
+The agent should detect hesitation and proactively offer help:
+
+```mermaid
+flowchart TD
+    subgraph Triggers["Hesitation Signals"]
+        Pause["Long pause after accepting"]
+        Hedge["Hedging words: 'I guess', 'maybe'"]
+        Return["Returns without completing"]
+        Vague["Vague responses: 'um', 'uh'"]
+    end
+
+    subgraph Response["Proactive Assistance"]
+        Offer["'Need help getting started?'"]
+        Provide["Automatically provide first step"]
+        Check["'Where did you get to?'"]
+    end
+
+    Pause --> Offer
+    Hedge --> Provide
+    Return --> Check
+    Vague --> Offer
+```
+
+### Response Templates by Level
+
+| Level | Template |
+|-------|----------|
+| Overview | "Here's the plan: 1) X (5 min), 2) Y (10 min), 3) Z (5 min). Ready to start with X?" |
+| Current Step | "Right now, focus on just this: [specific action]. That's it for now." |
+| Micro-Action | "Don't worry about the whole thing. Just do this one tiny thing: [micro-action]" |
+| Hand-Holding | "Here's exactly what to do: Open [app]. Click [button]. Type [specific text]. Done!" |
+
+### Example Assistance Flows
+
+**Confident User:**
+```
+User: "What are all the steps for this?"
+AI: "Here's the full breakdown:
+     1. Draft the outline (15 min)
+     2. Write the introduction (20 min)
+     3. Fill in each section (30 min)
+     4. Review and polish (10 min)
+
+     Total: ~75 min. Start with the outline?"
+```
+
+**Uncertain User:**
+```
+User: "I guess I'll do the report..."
+AI: "Let's make this concrete. Your first step:
+     → Open a new document and write just the title and your name.
+
+     That's it for now. Let me know when that's done and I'll give you the next piece."
+```
+
+**Stuck User:**
+```
+User: "I don't know where to start"
+AI: "Totally fine - let's make this tiny.
+
+     Right now, just open your email and find the original request.
+     Don't do anything else yet. Just find it and tell me when you have it open."
+```
+
+**Very Stuck User:**
+```
+User: "I still can't get going"
+AI: "I hear you. Let's go even smaller.
+
+     Step 1: Put your phone in another room.
+     Step 2: Set a 10-minute timer.
+     Step 3: Open [specific app/file].
+
+     Just do step 1 right now. I'll be here when you're back."
+```
 
 ---
 
