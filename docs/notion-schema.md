@@ -11,7 +11,7 @@ erDiagram
     TASKS {
         string id PK "Notion page ID"
         string title "Task description"
-        select status "pending|in_progress|completed"
+        select status "pending|in_progress|completed|has_subtasks"
         select work_type "focus|creative|social|independent"
         number urgency "0-100 scale"
         number time_estimate "Minutes"
@@ -21,7 +21,12 @@ erDiagram
         number rejection_count "Times rejected"
         rich_text rejection_notes "Append-only log"
         rich_text ai_context "Intake conversation"
+        relation parent_task_id FK "Parent task (if sub-task)"
+        number sequence "Order within parent (1, 2, 3...)"
+        rich_text progress_notes "What user accomplished"
     }
+
+    TASKS ||--o{ TASKS : "has sub-tasks"
 ```
 
 ## Property Definitions
@@ -48,10 +53,13 @@ Tracks task lifecycle state.
 ```mermaid
 stateDiagram-v2
     [*] --> pending: Task created
+    [*] --> has_subtasks: Complex task broken down
     pending --> in_progress: User accepts task
     in_progress --> completed: User finishes
     in_progress --> pending: User abandons
+    in_progress --> has_subtasks: User cannot finish (breakdown)
     pending --> completed: User says "already done"
+    has_subtasks --> completed: All sub-tasks completed
 ```
 
 | Value | Description | Trigger |
@@ -59,8 +67,11 @@ stateDiagram-v2
 | `pending` | Waiting to be worked on | Default on creation |
 | `in_progress` | Currently active | User accepts suggestion |
 | `completed` | Finished | User marks done |
+| `has_subtasks` | Parent task with hidden sub-tasks | Complex task or CANNOT_FINISH |
 
 **Note:** There is no "rejected" status. Rejected tasks return to `pending` with rejection notes appended.
+
+**Note:** Tasks with `has_subtasks` status are never directly suggested to users. Only their pending sub-tasks are surfaced.
 
 ---
 
@@ -266,6 +277,105 @@ AI: Added - focused work, ~30 min, moderate urgency.
 
 ---
 
+### ParentTaskId (relation)
+
+Links sub-tasks to their parent task. Null for standalone tasks.
+
+```mermaid
+flowchart TD
+    subgraph Parent["Parent Task"]
+        P["Complete Q4 report<br/>ID: abc123<br/>Status: has_subtasks"]
+    end
+
+    subgraph SubTasks["Sub-tasks"]
+        S1["Draft outline<br/>parent_task_id: abc123<br/>sequence: 1"]
+        S2["Write body<br/>parent_task_id: abc123<br/>sequence: 2"]
+        S3["Edit and finalize<br/>parent_task_id: abc123<br/>sequence: 3"]
+    end
+
+    P --> S1
+    P --> S2
+    P --> S3
+```
+
+**Constraints:**
+- Self-referential relation to same database
+- Null for parent tasks and standalone tasks
+- Set on sub-task creation
+
+**Note:** This relation is used internally and never exposed to users.
+
+---
+
+### Sequence (number)
+
+Order of sub-task within its parent. Determines which sub-task to offer next.
+
+| Value | Meaning |
+|-------|---------|
+| 1 | First sub-task (offered first) |
+| 2 | Second sub-task |
+| 3+ | Subsequent sub-tasks |
+| null | Not a sub-task |
+
+**Used for:**
+- Determining next sub-task to suggest after completion
+- Maintaining logical order of work
+- Skipping to later sub-tasks if earlier ones are blocked
+
+---
+
+### ProgressNotes (rich text)
+
+Tracks what the user accomplished, especially during CANNOT_FINISH events.
+
+```
+Format:
+[2025-01-04 10:30] User started: "outlined the main points"
+[2025-01-04 11:00] CANNOT_FINISH: "wrote intro, need to continue with body"
+[2025-01-05 09:00] Sub-task 1 completed
+```
+
+**Used for:**
+- Understanding what work remains after CANNOT_FINISH
+- Creating accurate sub-tasks for remaining work
+- Providing context when resuming work
+
+---
+
+## Sub-task Relationships
+
+```mermaid
+erDiagram
+    PARENT_TASK ||--o{ SUB_TASK : contains
+    PARENT_TASK {
+        string id PK
+        string title
+        select status "has_subtasks"
+        rich_text progress_notes
+    }
+    SUB_TASK {
+        string id PK
+        string title
+        select status "pending|in_progress|completed"
+        relation parent_task_id FK
+        number sequence
+    }
+```
+
+### Parent Task Completion
+
+A parent task automatically moves to `completed` when all its sub-tasks are completed:
+
+```mermaid
+flowchart TD
+    Check{All sub-tasks<br/>completed?}
+    Check -->|Yes| Complete[Parent status → completed]
+    Check -->|No| Wait[Parent stays has_subtasks]
+```
+
+---
+
 ## API Operations
 
 ### Create Task
@@ -311,6 +421,10 @@ sequenceDiagram
 | Short tasks | `status = "pending" AND time_estimate <= 30` |
 | High urgency | `status = "pending" AND urgency >= 70` |
 | Focus work | `status = "pending" AND work_type = "focus"` |
+| Sub-tasks of parent | `parent_task_id = "{parent_id}"` |
+| Next sub-task | `parent_task_id = "{parent_id}" AND status = "pending"` (sort by sequence) |
+| Standalone tasks only | `parent_task_id IS NULL AND status != "has_subtasks"` |
+| Parent tasks | `status = "has_subtasks"` |
 
 ---
 
@@ -334,6 +448,9 @@ sequenceDiagram
 | Complete task | `status → completed, completedAt → now` |
 | Reject task | `rejectionCount += 1, rejectionNotes += reason` |
 | Unblock task | Clear blocked status in rejectionNotes |
+| Cannot finish | `status → has_subtasks, progressNotes += progress` |
+| Create sub-task | `parent_task_id, sequence, status = pending` |
+| Complete sub-task | `status → completed` (check if parent complete) |
 
 ---
 
@@ -344,7 +461,9 @@ flowchart TD
     subgraph Intake["Task Intake"]
         I1[User message] --> I2[AI parsing]
         I2 --> I3[Label inference]
-        I3 --> I4[Create in Notion]
+        I3 --> I4{Complex task?}
+        I4 -->|No| I5[Create single task]
+        I4 -->|Yes| I6[Create parent + sub-tasks]
     end
 
     subgraph Storage["Notion Database"]
@@ -360,13 +479,17 @@ flowchart TD
         U1[Accept → in_progress]
         U2[Complete → completed]
         U3[Reject → append notes]
+        U4[Cannot finish → breakdown]
     end
 
-    I4 --> DB
+    I5 --> DB
+    I6 --> DB
     DB --> S1
     S3 --> U1
     S3 --> U2
     S3 --> U3
+    U1 --> U4
+    U4 --> DB
     U1 --> DB
     U2 --> DB
     U3 --> DB
@@ -410,20 +533,51 @@ export NOTION_DATABASE_ID="abc123..."
 
 ## Sample Data
 
+### Standalone Tasks
+
 ```mermaid
 flowchart TD
     subgraph Sample["Example Tasks"]
         T1["Review Sarah's proposal<br/>focus | 65 | 30min | medium"]
         T2["Call mom<br/>social | 25 | 15min | low"]
         T3["Organize receipts<br/>independent | 30 | 20min | low"]
-        T4["Brainstorm Q2 ideas<br/>creative | 45 | 90min | high"]
     end
 ```
 
-| Title | WorkType | Urgency | Time | Energy | Status |
-|-------|----------|---------|------|--------|--------|
-| Review Sarah's proposal | focus | 65 | 30 | medium | pending |
-| Call mom | social | 25 | 15 | low | pending |
-| Organize receipts | independent | 30 | 20 | low | pending |
-| Brainstorm Q2 ideas | creative | 45 | 90 | high | pending |
-| Book dentist appointment | independent | 15 | 10 | low | completed |
+| Title | WorkType | Urgency | Time | Energy | Status | Parent |
+|-------|----------|---------|------|--------|--------|--------|
+| Review Sarah's proposal | focus | 65 | 30 | medium | pending | — |
+| Call mom | social | 25 | 15 | low | pending | — |
+| Organize receipts | independent | 30 | 20 | low | pending | — |
+| Book dentist appointment | independent | 15 | 10 | low | completed | — |
+
+### Parent Task with Sub-tasks (Hidden from User)
+
+```mermaid
+flowchart TD
+    subgraph Parent["Parent Task"]
+        P["Complete Q4 report<br/>focus | 70 | — | high<br/>Status: has_subtasks"]
+    end
+
+    subgraph SubTasks["Sub-tasks (Hidden)"]
+        S1["1. Draft outline<br/>30 min | pending"]
+        S2["2. Write introduction<br/>45 min | pending"]
+        S3["3. Write analysis<br/>60 min | pending"]
+        S4["4. Edit and finalize<br/>30 min | pending"]
+    end
+
+    P --> S1
+    P --> S2
+    P --> S3
+    P --> S4
+```
+
+| Title | WorkType | Urgency | Time | Energy | Status | Parent | Seq |
+|-------|----------|---------|------|--------|--------|--------|-----|
+| Complete Q4 report | focus | 70 | 165 | high | has_subtasks | — | — |
+| Draft outline | focus | 70 | 30 | medium | pending | Q4 report | 1 |
+| Write introduction | focus | 70 | 45 | high | pending | Q4 report | 2 |
+| Write analysis | focus | 70 | 60 | high | pending | Q4 report | 3 |
+| Edit and finalize | focus | 70 | 30 | medium | pending | Q4 report | 4 |
+
+**User Experience:** When the user asks for a task, they see: "How about drafting the outline for the Q4 report? Should take about 30 minutes." They never see the parent task or full breakdown.

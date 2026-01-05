@@ -14,12 +14,14 @@ flowchart TD
     Detect --> GetTask["GET_TASK<br/>Ready to work"]
     Detect --> Complete["COMPLETE<br/>Finished task"]
     Detect --> Reject["REJECT<br/>Don't want this task"]
+    Detect --> CannotFinish["CANNOT_FINISH<br/>Task too large"]
     Detect --> Chat["CHAT<br/>General conversation"]
 
     AddTask --> IntakeFlow[Task Intake Flow]
     GetTask --> SelectionFlow[Task Selection Flow]
     Complete --> CompletionFlow[Completion Flow]
     Reject --> RejectionFlow[Rejection Flow]
+    CannotFinish --> BreakdownFlow[Task Breakdown Flow]
     Chat --> ChatResponse[Conversational Response]
 ```
 
@@ -31,6 +33,7 @@ flowchart TD
 | GET_TASK | "I have X minutes", "What should I do?", "I'm ready to work" |
 | COMPLETE | "Done", "Finished", "Completed", "I did it" |
 | REJECT | "Not that one", "Something else", "I don't want to" |
+| CANNOT_FINISH | "This is too big", "I can't finish this", "Too much for one sitting" |
 | CHAT | "Hello", "How does this work?", "What's in my list?" |
 
 ## Flow 1: Task Intake
@@ -299,7 +302,108 @@ flowchart TD
     R4 -->|No| Continue[Continue suggesting]
 ```
 
-## Flow 5: Special Cases
+## Flow 5: Cannot Finish (Task Breakdown)
+
+When a user indicates they cannot finish a task, it signals the task was too large and needs to be broken down into smaller sub-tasks. **Critically, the AI must first ask what the user accomplished** to understand what remains.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI Assistant
+    participant N as Notion
+
+    AI->>U: "How about working on the Q4 marketing plan?"
+    U->>AI: "I started but this is too big to finish"
+
+    Note over AI: CANNOT_FINISH detected
+
+    AI->>U: "No worries - what did you get into before stopping?"
+    U->>AI: "I drafted the outline and did initial research"
+
+    Note over AI: Analyze: Outline + research done<br/>Writing and analysis remain
+
+    AI->>N: Create sub-tasks for remainder (hidden)
+    AI->>N: Update parent task with progress notes
+
+    Note over N: Hidden sub-tasks created:<br/>1. Write executive summary<br/>2. Draft competitive analysis<br/>3. Finalize recommendations
+
+    AI->>U: "Good progress! Ready to tackle the executive summary? Should take about 30 min."
+```
+
+### Cannot Finish Decision Tree
+
+```mermaid
+flowchart TD
+    CannotFinish([User: "This is too big"]) --> AskProgress["Ask: What did you accomplish?"]
+    AskProgress --> UserDescribes[User describes progress]
+    UserDescribes --> Analyze[Analyze remaining work]
+    Analyze --> HasSubtasks{Already has sub-tasks?}
+
+    HasSubtasks -->|Yes| UpdateProgress[Update completed sub-tasks]
+    HasSubtasks -->|No| CreateSubtasks[Break remainder into sub-tasks]
+
+    UpdateProgress --> RemainingTooLarge{Remaining sub-task too large?}
+    RemainingTooLarge -->|Yes| BreakFurther[Break into smaller chunks]
+    RemainingTooLarge -->|No| OfferNext[Offer next sub-task]
+
+    CreateSubtasks --> InferBreakdown[AI infers logical breakdown<br/>based on what remains]
+    InferBreakdown --> SaveHidden[Save sub-tasks to Notion<br/>Hidden from user]
+
+    BreakFurther --> SaveHidden
+    SaveHidden --> OfferFirst[Offer first remaining sub-task]
+
+    OfferNext --> Present([Present manageable task])
+    OfferFirst --> Present
+```
+
+### Breakdown Strategy
+
+```mermaid
+flowchart LR
+    subgraph Input["Original Task"]
+        Big["Complete the project"]
+    end
+
+    subgraph Analysis["AI Analysis"]
+        Scope[Identify scope]
+        Phases[Determine phases]
+        FirstAction[Find first actionable step]
+    end
+
+    subgraph Output["Hidden Sub-tasks"]
+        S1["Complete first revision"]
+        S2["Get initial feedback"]
+        S3["Incorporate revisions"]
+        S4["Final review"]
+    end
+
+    Input --> Scope
+    Scope --> Phases
+    Phases --> FirstAction
+    FirstAction --> S1
+    S1 -.-> S2
+    S2 -.-> S3
+    S3 -.-> S4
+```
+
+**Key Principles:**
+- Sub-task breakdown is NEVER shown to the user
+- Each sub-task should be completable in one sitting (typically 15-90 min)
+- The AI presents only the current actionable sub-task
+- Parent task only completes when all sub-tasks are done
+
+### Cannot Finish Response Templates
+
+| Scenario | Response Template |
+|----------|-------------------|
+| First time | "Got it - that's a big one. I've broken it into smaller pieces. Ready for the first chunk?" |
+| Already broken | "Still too much? Let me find an even smaller piece to start with." |
+| Can't break further | "This is pretty atomic. What specific part is blocking you?" |
+| Making progress | "Nice - one piece done. Ready for the next bit?" |
+
+---
+
+## Flow 6: Special Cases
 
 ### Empty Queue
 

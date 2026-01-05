@@ -86,19 +86,30 @@ sequenceDiagram
     Claude-->>Server: Intent + parameters
 
     alt Task Intake
-        Server->>Claude: Extract task details
-        Claude-->>Server: Labels + estimates
-        Server->>Notion: Create task
-        Notion-->>Server: Task ID
-        Server-->>UI: Confirmation message
+        Server->>Claude: Extract task details + complexity
+        Claude-->>Server: Labels + estimates + breakdown (if needed)
+        alt Simple Task
+            Server->>Notion: Create single task
+        else Complex Task
+            Server->>Notion: Create parent + sub-tasks (hidden)
+        end
+        Notion-->>Server: Task ID(s)
+        Server-->>UI: Confirmation message (first sub-task if complex)
     else Task Selection
-        Server->>Notion: Fetch pending tasks
+        Server->>Notion: Fetch pending tasks (exclude has_subtasks)
         Notion-->>Server: Task list
         Server->>Claude: Select best match
         Claude-->>Server: Selected task + reasoning
         Server-->>UI: Task suggestion
     else Task Completion
         Server->>Notion: Update status
+        alt Is Sub-task
+            Server->>Notion: Check if all siblings complete
+            Notion-->>Server: Sibling status
+            opt All Complete
+                Server->>Notion: Update parent to completed
+            end
+        end
         Notion-->>Server: Success
         Server-->>UI: Celebration message
     else Task Rejection
@@ -106,6 +117,17 @@ sequenceDiagram
         Server->>Claude: Select alternative
         Claude-->>Server: New suggestion
         Server-->>UI: Alternative task
+    else Cannot Finish
+        Server->>Claude: Ask what was accomplished
+        Claude-->>Server: Progress question
+        Server-->>UI: Progress question
+        User->>UI: Describes progress
+        UI->>Server: Progress response
+        Server->>Claude: Analyze remaining work
+        Claude-->>Server: Sub-task breakdown
+        Server->>Notion: Update parent + create sub-tasks
+        Notion-->>Server: Success
+        Server-->>UI: Offer first remaining sub-task
     end
 
     UI-->>User: Display response
@@ -122,9 +144,12 @@ flowchart TD
     subgraph Processing["Server Processing"]
         Intent[Intent Detection]
         Intake[Task Intake]
+        Complexity[Complexity Evaluation]
+        Breakdown[Task Breakdown]
         Select[Task Selection]
         Complete[Completion Handler]
         Reject[Rejection Handler]
+        CannotFinish[Cannot Finish Handler]
     end
 
     subgraph Storage["Notion Database"]
@@ -140,16 +165,25 @@ flowchart TD
     Intent -->|"get task"| Select
     Intent -->|"done"| Complete
     Intent -->|"reject"| Reject
+    Intent -->|"cannot finish"| CannotFinish
 
-    Intake -->|Create| DB
-    Select -->|Read| DB
+    Intake --> Complexity
+    Complexity -->|Simple| DB
+    Complexity -->|Complex| Breakdown
+    Breakdown -->|Create parent + sub-tasks| DB
+
+    Select -->|Read pending| DB
     Complete -->|Update status| DB
     Reject -->|Update notes| DB
+
+    CannotFinish -->|Ask progress| Response
+    CannotFinish -->|Create sub-tasks| Breakdown
 
     Intake --> Response
     Select --> Response
     Complete --> Response
     Reject --> Response
+    Breakdown --> Response
 ```
 
 ## Deployment Architecture

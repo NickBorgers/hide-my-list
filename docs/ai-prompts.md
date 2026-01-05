@@ -71,6 +71,7 @@ flowchart TD
     Classify --> GET["GET_TASK<br/>Ready to work"]
     Classify --> DONE["COMPLETE<br/>Finished task"]
     Classify --> NOPE["REJECT<br/>Doesn't want this"]
+    Classify --> CANT["CANNOT_FINISH<br/>Task too large"]
     Classify --> CHAT["CHAT<br/>General"]
 ```
 
@@ -84,6 +85,7 @@ Categories:
 - GET_TASK: User wants something to work on (mentions time available, asks what to do)
 - COMPLETE: User finished their current task (says done, finished, completed)
 - REJECT: User doesn't want the suggested task (says no, not that one, something else)
+- CANNOT_FINISH: User indicates current task is too large or overwhelming (too big, can't finish, overwhelming)
 - CHAT: General conversation or questions
 
 Message: "{user_message}"
@@ -103,6 +105,9 @@ Intent:
 | "Finished that one" | COMPLETE |
 | "Not that one" | REJECT |
 | "Something else" | REJECT |
+| "This is too big" | CANNOT_FINISH |
+| "I can't finish this in one go" | CANNOT_FINISH |
+| "This is overwhelming" | CANNOT_FINISH |
 | "How does this work?" | CHAT |
 | "Hello" | CHAT |
 
@@ -115,13 +120,18 @@ flowchart TD
     subgraph Process["Intake Process"]
         Parse[Parse task description]
         Infer[Infer labels]
+        Complexity{Complexity check}
+        Breakdown[Generate sub-tasks]
         Confidence{Confidence check}
         Ask[Ask clarifying question]
         Save[Generate save response]
     end
 
     Parse --> Infer
-    Infer --> Confidence
+    Infer --> Complexity
+    Complexity -->|Too large| Breakdown
+    Complexity -->|Manageable| Confidence
+    Breakdown --> Save
     Confidence -->|Low| Ask
     Confidence -->|High| Save
     Ask --> Parse
@@ -130,7 +140,7 @@ flowchart TD
 ### Task Intake Prompt
 
 ```
-The user wants to add a task. Extract details and infer labels.
+The user wants to add a task. Extract details, infer labels, and evaluate complexity.
 
 User said: "{user_message}"
 Previous context: {conversation_history}
@@ -146,6 +156,19 @@ TASK_ANALYSIS:
 - time_estimate_minutes: (number)
 - time_confidence: (0.0-1.0)
 - energy_required: (high|medium|low)
+
+COMPLEXITY EVALUATION:
+Determine if this task needs breakdown into sub-tasks.
+- needs_breakdown: true if task is vague, multi-step, or estimated > 90 minutes
+- If needs_breakdown=true, create actionable sub-tasks (HIDDEN from user)
+- Each sub-task should be completable in 15-90 minutes
+- Reframe large tasks as their first achievable step
+
+BREAKDOWN SIGNALS (needs_breakdown=true):
+- Vague scope: "complete the project", "finish the report", "work on X"
+- Multi-phase: tasks requiring research → draft → review → finalize
+- Long duration: estimated > 90 minutes
+- Multiple deliverables: "prepare and send", "design and implement"
 
 DECISION:
 If any confidence < 0.5, set needs_clarification=true and provide ONE question.
@@ -163,9 +186,46 @@ OUTPUT (JSON):
   "energy_required": "...",
   "needs_clarification": true|false,
   "clarification_question": "..." or null,
+  "needs_breakdown": true|false,
+  "sub_tasks": [...] or null,
+  "presentable_title": "..." (first actionable step if breakdown needed),
   "confirmation_message": "..." (brief confirmation if saving)
 }
+
+IMPORTANT: Sub-tasks are NEVER shown to the user. Only present the first
+actionable step. The user sees "Added - focus work, ~30 min" not the full breakdown.
 ```
+
+### Complexity Evaluation Rules
+
+```mermaid
+flowchart TD
+    subgraph Signals["Breakdown Signals"]
+        Vague["Vague scope<br/>'complete', 'finish', 'work on'"]
+        MultiPhase["Multi-phase work<br/>research + draft + review"]
+        LongDuration["Long duration<br/>> 90 minutes"]
+        MultiDeliverable["Multiple outputs<br/>'prepare and send'"]
+    end
+
+    subgraph Decision["Breakdown Decision"]
+        NeedsBreakdown[needs_breakdown = true]
+        Manageable[needs_breakdown = false]
+    end
+
+    Vague --> NeedsBreakdown
+    MultiPhase --> NeedsBreakdown
+    LongDuration --> NeedsBreakdown
+    MultiDeliverable --> NeedsBreakdown
+```
+
+### Task Reframing Examples
+
+| User Says | Presentable Title | Hidden Sub-tasks |
+|-----------|-------------------|------------------|
+| "Complete the project" | "Draft project outline" | 1. Draft outline, 2. First revision, 3. Review, 4. Finalize |
+| "Finish the report" | "Write report introduction" | 1. Introduction, 2. Body sections, 3. Conclusion, 4. Edit |
+| "Plan the event" | "List event requirements" | 1. Requirements, 2. Venue research, 3. Budget, 4. Timeline |
+| "Prepare presentation" | "Outline presentation" | 1. Outline, 2. Draft slides, 3. Add visuals, 4. Practice |
 
 ### Work Type Inference Rules
 
@@ -430,6 +490,128 @@ flowchart TD
     R4 -->|Yes| Exit["'Maybe now's not the time.<br/>I'll be here when you're ready.'"]
     R4 -->|No| Continue["Continue"]
 ```
+
+---
+
+## Module 5: Cannot Finish Handling
+
+When a user indicates they cannot finish a task, we need to understand what was accomplished and break down what remains.
+
+```mermaid
+flowchart TD
+    CannotFinish([User: "This is too big"]) --> AskProgress[Ask what was accomplished]
+    AskProgress --> UserProgress[User describes progress]
+    UserProgress --> Analyze[Analyze remaining work]
+    Analyze --> CreateSubtasks[Create sub-tasks for remainder]
+    CreateSubtasks --> UpdateParent[Update parent task]
+    UpdateParent --> OfferNext[Offer next sub-task]
+```
+
+### Cannot Finish Prompt
+
+```
+The user indicates they cannot finish the current task. Gather progress and break down remaining work.
+
+CURRENT TASK: {task_title}
+ORIGINAL TIME ESTIMATE: {time_estimate} minutes
+USER MESSAGE: "{user_message}"
+
+STEP 1: Ask what was accomplished
+Generate a brief, friendly question to understand their progress.
+
+STEP 2: Once progress is described, analyze remaining work
+- What did the user complete?
+- What specific work remains?
+- How can remaining work be broken into 15-90 minute chunks?
+
+STEP 3: Create sub-tasks for remaining work
+- Each sub-task must be specific and actionable
+- First sub-task should be the immediate next step
+- Sub-tasks are HIDDEN from user
+
+OUTPUT (JSON):
+{
+  "phase": "ask_progress" | "analyze_remaining",
+  "user_message": "...",
+  "progress_question": "..." (if phase=ask_progress),
+  "completed_portion": "..." (if phase=analyze_remaining),
+  "remaining_sub_tasks": [
+    {
+      "title": "...",
+      "time_estimate_minutes": 0,
+      "sequence": 1
+    }
+  ] (if phase=analyze_remaining),
+  "next_sub_task_message": "..." (offer first remaining sub-task)
+}
+```
+
+### Progress Question Templates
+
+| Scenario | Question |
+|----------|----------|
+| Just started | "No worries - what did you get into before stopping?" |
+| Partially done | "Got it. What part did you manage to get done?" |
+| Stuck | "That's okay. What's the last thing you completed on this?" |
+| Overwhelmed | "Totally understand. Tell me what you accomplished so far." |
+
+### Remaining Work Analysis
+
+```mermaid
+flowchart LR
+    subgraph Input["User Progress"]
+        Completed["What they did"]
+        Stopped["Where they stopped"]
+    end
+
+    subgraph Analysis["AI Analysis"]
+        Identify[Identify remaining phases]
+        Sequence[Determine logical sequence]
+        Estimate[Estimate each chunk]
+    end
+
+    subgraph Output["Hidden Sub-tasks"]
+        S1["Next immediate step"]
+        S2["Following step"]
+        S3["Final step"]
+    end
+
+    Input --> Analysis
+    Analysis --> Output
+```
+
+### Cannot Finish Response Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI Assistant
+    participant N as Notion
+
+    U->>AI: "I can't finish this - it's too big"
+    AI->>U: "No worries - what did you get into before stopping?"
+    U->>AI: "I outlined it but haven't written anything"
+
+    Note over AI: Analyze: Outline done, writing remains
+
+    AI->>N: Create sub-tasks (hidden)
+    Note over N: 1. Write introduction<br/>2. Write body sections<br/>3. Write conclusion<br/>4. Edit and polish
+
+    AI->>N: Mark "Write introduction" as next
+    AI->>U: "Good progress on the outline! Ready to tackle the introduction? Should take about 30 min."
+```
+
+### Sub-task Creation Rules
+
+| Original Task Type | Typical Breakdown Pattern |
+|-------------------|---------------------------|
+| Writing task | Outline → Sections → Edit → Finalize |
+| Research task | Define scope → Gather sources → Analyze → Summarize |
+| Planning task | Requirements → Options → Decision → Documentation |
+| Coding task | Design → Implement → Test → Refactor |
+| Creative task | Brainstorm → Draft → Iterate → Polish |
+
+**Key Principle:** When a CANNOT_FINISH occurs, it indicates the original breakdown (if any) left tasks too large. The new breakdown should create smaller, more achievable chunks.
 
 ---
 

@@ -11,7 +11,11 @@ stateDiagram-v2
     [*] --> Intake: User describes task
 
     Intake --> Labeling: Task captured
-    Labeling --> Pending: Labels assigned
+    Labeling --> Complexity: Labels assigned
+    Complexity --> Pending: Simple task
+    Complexity --> Breakdown: Complex task
+
+    Breakdown --> Pending: Sub-tasks created (hidden)
 
     Pending --> Selected: User requests task
     Pending --> Pending: Time passes (urgency static)
@@ -24,6 +28,9 @@ stateDiagram-v2
 
     InProgress --> Completed: User finishes
     InProgress --> Pending: User abandons
+    InProgress --> CannotFinish: Task too large
+
+    CannotFinish --> Breakdown: Break into smaller pieces
 
     Completed --> [*]
 ```
@@ -34,10 +41,13 @@ stateDiagram-v2
 |-------|-------------|---------------|
 | Intake | Task being captured, AI asking questions | N/A (not yet saved) |
 | Labeling | AI assigning work type, urgency, time estimate | N/A (not yet saved) |
+| Complexity | AI evaluating if task needs breakdown | N/A (not yet saved) |
+| Breakdown | AI creating sub-tasks (hidden from user) | N/A (parent) / `pending` (sub-tasks) |
 | Pending | Task saved, waiting to be selected | `pending` |
 | Selected | Task suggested to user, awaiting response | `pending` |
 | In Progress | User actively working on task | `in_progress` |
 | Rejected | User declined, giving feedback | `pending` |
+| Cannot Finish | User indicates task is too large | `in_progress` (triggers breakdown) |
 | Completed | Task finished | `completed` |
 
 ## Phase 1: Task Intake
@@ -118,6 +128,82 @@ flowchart TD
         T3[/"project, deep work"/] --> Long[90+ min]
     end
 ```
+
+## Phase 2.5: Complexity Evaluation & Breakdown
+
+After labeling, the AI evaluates whether a task needs to be broken down into sub-tasks. **Sub-tasks are always hidden from the user.**
+
+```mermaid
+flowchart TD
+    Labeled([Task Labeled]) --> Evaluate{Complexity Check}
+
+    Evaluate -->|Simple task| SaveDirect[Save single task]
+    Evaluate -->|Complex task| Breakdown[Generate sub-tasks]
+
+    Breakdown --> CreateHidden[Create sub-tasks in Notion<br/>Hidden from user]
+    CreateHidden --> LinkParent[Link to parent task]
+    LinkParent --> SaveParent[Save parent as container]
+
+    SaveDirect --> Ready([Task ready for selection])
+    SaveParent --> Ready
+```
+
+### Complexity Signals
+
+```mermaid
+flowchart TD
+    subgraph Triggers["Breakdown Triggers"]
+        Vague["Vague scope<br/>'complete', 'finish', 'work on'"]
+        Long["Long duration<br/>> 90 minutes estimated"]
+        Multi["Multiple phases<br/>research + draft + review"]
+        Deliverables["Multiple outputs<br/>'prepare and send'"]
+    end
+
+    subgraph Decision["Breakdown Decision"]
+        Break[needs_breakdown = true]
+        Simple[needs_breakdown = false]
+    end
+
+    Vague --> Break
+    Long --> Break
+    Multi --> Break
+    Deliverables --> Break
+```
+
+### Sub-task Structure
+
+When a task is broken down, the system creates:
+- **Parent task**: The original task description (status: `has_subtasks`)
+- **Sub-tasks**: Actionable pieces (status: `pending`, linked to parent)
+
+```mermaid
+flowchart TD
+    subgraph Parent["Parent Task (Hidden Structure)"]
+        P["Complete Q4 report<br/>Status: has_subtasks"]
+    end
+
+    subgraph SubTasks["Sub-tasks (Hidden from User)"]
+        S1["1. Draft outline<br/>30 min | pending"]
+        S2["2. Write introduction<br/>45 min | pending"]
+        S3["3. Write analysis<br/>60 min | pending"]
+        S4["4. Edit and finalize<br/>30 min | pending"]
+    end
+
+    P --> S1
+    P --> S2
+    P --> S3
+    P --> S4
+```
+
+**User Experience:** The user never sees this structure. When they request a task, they receive: "How about drafting the outline for the Q4 report? Should take about 30 minutes."
+
+### Task Reframing
+
+| User Says | What User Sees | Hidden Reality |
+|-----------|----------------|----------------|
+| "Complete the project" | "Draft project outline - 30 min" | 4 sub-tasks created |
+| "Finish the report" | "Write report introduction - 45 min" | 4 sub-tasks created |
+| "Plan the event" | "List event requirements - 20 min" | 5 sub-tasks created |
 
 ## Phase 3: Task Selection
 
@@ -256,6 +342,76 @@ flowchart LR
         Learn2 --> A2[Only suggest<br/>low-energy tasks]
         Learn3 --> A3[Multiply estimates<br/>by 1.2x]
     end
+```
+
+## Phase 5.5: Cannot Finish (Re-breakdown)
+
+When a user indicates they cannot finish a task, the system gathers progress information and creates new sub-tasks for the remaining work.
+
+```mermaid
+flowchart TD
+    Working([User working on task]) --> CannotFinish["User: 'This is too big'"]
+    CannotFinish --> AskProgress[AI asks what was accomplished]
+    AskProgress --> UserResponds[User describes progress]
+    UserResponds --> Analyze[Analyze remaining work]
+    Analyze --> CreateNew[Create sub-tasks for remainder]
+    CreateNew --> UpdateParent[Update parent task progress]
+    UpdateParent --> OfferNext[Offer next manageable piece]
+    OfferNext --> Continue([Continue with smaller task])
+```
+
+### Progress Gathering
+
+The AI must always ask what the user accomplished before breaking down remaining work:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI Assistant
+    participant N as Notion
+
+    U->>AI: "I can't finish this"
+    AI->>U: "No worries - what did you get done?"
+    U->>AI: "I outlined it and wrote the intro"
+
+    Note over AI: Progress: outline + intro done<br/>Remaining: body + conclusion + edit
+
+    AI->>N: Update task with progress notes
+    AI->>N: Create sub-tasks for remainder (hidden)
+
+    AI->>U: "Nice progress! Ready to tackle the body section? About 45 min."
+```
+
+### Re-breakdown Rules
+
+| Scenario | Action |
+|----------|--------|
+| First CANNOT_FINISH | Ask progress → Break into 3-5 sub-tasks |
+| Second CANNOT_FINISH | Break current sub-task into 2-3 smaller pieces |
+| Third+ CANNOT_FINISH | Ask what specific part is blocking → Create atomic tasks |
+
+### Learning from Cannot Finish
+
+Each CANNOT_FINISH signal teaches the system:
+- Original time estimates may be too aggressive
+- Task scope was underestimated
+- Future similar tasks should be pre-broken
+
+```mermaid
+flowchart LR
+    subgraph Signal["CANNOT_FINISH Signal"]
+        CF[Task too large]
+    end
+
+    subgraph Learning["System Learning"]
+        L1[Increase time estimates<br/>for similar tasks]
+        L2[Lower complexity threshold<br/>for auto-breakdown]
+        L3[Remember task patterns<br/>that need breakdown]
+    end
+
+    CF --> L1
+    CF --> L2
+    CF --> L3
 ```
 
 ## Phase 6: Task Completion
