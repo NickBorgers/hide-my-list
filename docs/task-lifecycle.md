@@ -622,8 +622,6 @@ The reward system scales celebrations based on achievement significance:
 | Parent task complete | Epic | All rewards + AI video + Outing suggestion |
 | All tasks cleared | Epic | Maximum celebration |
 
-See [reward-system.md](./reward-system.md) for complete reward system documentation.
-
 ## Complete Task Journey Example
 
 ```mermaid

@@ -321,8 +321,6 @@ flowchart TD
     SuggestOuting --> End
 ```
 
-See [reward-system.md](./reward-system.md) for complete reward system documentation.
-
 ## Flow 4: Task Rejection
 
 ```mermaid
