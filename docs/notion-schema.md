@@ -27,6 +27,24 @@ erDiagram
         rich_text progress_notes "What user accomplished"
     }
 
+    USER_PREFERENCES {
+        string id PK "Notion page ID"
+        string user_id "User identifier"
+        select preferred_beverage "tea|coffee|water|none"
+        rich_text comfort_spot "Favorite working spot"
+        rich_text transition_ritual "Between-task ritual"
+        select focus_music "lo-fi|classical|silence|none"
+        rich_text break_activity "Preferred break activity"
+        rich_text focus_prefs "JSON: focus work preferences"
+        rich_text creative_prefs "JSON: creative work preferences"
+        rich_text social_prefs "JSON: social work preferences"
+        rich_text independent_prefs "JSON: independent work preferences"
+        rich_text task_patterns "JSON: task pattern preferences"
+        rich_text time_prefs "JSON: time-of-day preferences"
+        rich_text energy_prefs "JSON: energy level adjustments"
+        date updated_at "Last preference update"
+    }
+
     TASKS ||--o{ TASKS : "has sub-tasks"
 ```
 
@@ -374,6 +392,203 @@ Format:
 - Understanding what work remains after CANNOT_FINISH
 - Creating accurate sub-tasks for remaining work
 - Providing context when resuming work
+
+---
+
+## User Preferences Properties
+
+The User Preferences table stores personalized settings that help create an environment for success during task execution. See [user-preferences.md](./user-preferences.md) for full documentation.
+
+### PreferredBeverage (select)
+
+User's preferred drink when working on tasks.
+
+| Value | Description |
+|-------|-------------|
+| `tea` | Hot tea (default for social/creative tasks) |
+| `coffee` | Coffee (default for focus tasks) |
+| `water` | Water or no specific preference |
+| `none` | User prefers no beverage prompts |
+
+---
+
+### ComfortSpot (rich text)
+
+Description of the user's favorite working location(s).
+
+```
+Examples:
+- "Cozy chair in the living room"
+- "Standing desk in the office"
+- "Kitchen table with morning light"
+- "Patio when weather is nice"
+```
+
+**Used for:** Suggesting environment setup in task breakdowns.
+
+---
+
+### TransitionRitual (rich text)
+
+Brief activity the user prefers between tasks.
+
+```
+Examples:
+- "Quick stretch"
+- "3 deep breaths"
+- "Walk to get water"
+- "Pet the cat"
+```
+
+**Used for:** Suggesting breaks between tasks and helping user reset.
+
+---
+
+### FocusMusic (select)
+
+Music preference during focused work.
+
+| Value | Description |
+|-------|-------------|
+| `lo-fi` | Lo-fi beats, ambient electronic |
+| `classical` | Classical music, instrumentals |
+| `silence` | Prefers quiet environment |
+| `none` | No music suggestions needed |
+
+---
+
+### BreakActivity (rich text)
+
+Preferred activity after completing tasks.
+
+```
+Examples:
+- "Quick walk around the block"
+- "Cup of tea on the patio"
+- "5 minutes with a book"
+- "Check in with partner"
+```
+
+---
+
+### Work Type Preferences (rich text - JSON)
+
+Four fields storing JSON objects with work-type-specific preferences:
+
+**FocusPrefs:**
+```json
+{
+  "beverage": "coffee",
+  "environment": "quiet office, door closed",
+  "prep_steps": ["put phone in another room", "close email"],
+  "music": "lo-fi",
+  "ideal_duration": "45-90 min"
+}
+```
+
+**CreativePrefs:**
+```json
+{
+  "beverage": "tea",
+  "environment": "natural light, open space",
+  "prep_steps": ["brief walk", "grab notebook"],
+  "tools": "paper before digital"
+}
+```
+
+**SocialPrefs:**
+```json
+{
+  "beverage": "tea",
+  "environment": "comfortable, quiet spot",
+  "prep_steps": ["review context", "set intention"],
+  "follow_up": "note key takeaways"
+}
+```
+
+**IndependentPrefs:**
+```json
+{
+  "beverage": "water",
+  "environment": "anywhere",
+  "batching": true,
+  "reward": "treat after batch"
+}
+```
+
+---
+
+### TaskPatterns (rich text - JSON)
+
+Preferences for specific recurring task types.
+
+```json
+{
+  "phone_calls": {
+    "prep_steps": ["find quiet room", "review last interaction"],
+    "environment": "comfortable seat",
+    "beverage": "tea"
+  },
+  "writing": {
+    "warmup": "2 min free-write",
+    "breaks": "every 25 min"
+  },
+  "email_batch": {
+    "setup": ["close tabs", "set timer"],
+    "approach": "quick ones first"
+  }
+}
+```
+
+---
+
+### TimePrefs (rich text - JSON)
+
+Preferences that vary by time of day.
+
+```json
+{
+  "morning": {
+    "beverage": "coffee",
+    "best_for": ["focus", "creative"],
+    "energy_tolerance": "high"
+  },
+  "afternoon": {
+    "beverage": "tea",
+    "best_for": ["social", "creative"],
+    "note": "post-lunch dip"
+  },
+  "evening": {
+    "beverage": "herbal tea",
+    "best_for": ["independent"],
+    "energy_tolerance": "low"
+  }
+}
+```
+
+---
+
+### EnergyPrefs (rich text - JSON)
+
+Adjustments based on user's current energy level.
+
+```json
+{
+  "high": {
+    "prep_style": "minimal",
+    "task_duration": "longer ok"
+  },
+  "medium": {
+    "prep_style": "standard rituals",
+    "task_duration": "normal"
+  },
+  "low": {
+    "prep_style": "extended, comfort-focused",
+    "task_duration": "shorter tasks",
+    "extra_steps": ["comfortable spot", "warm drink"]
+  }
+}
+```
 
 ---
 

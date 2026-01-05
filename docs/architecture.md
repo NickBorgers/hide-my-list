@@ -51,9 +51,15 @@ flowchart LR
         subgraph notion["notion/"]
             NotionClient[client.go]
             Tasks[tasks.go]
+            Preferences[preferences.go]
         end
         subgraph models["models/"]
             Task[task.go]
+            UserPrefs[preferences.go]
+        end
+        subgraph preferences["preferences/"]
+            PrefManager[manager.go]
+            PrefContext[context.go]
         end
         subgraph rewards["rewards/"]
             RewardEngine[engine.go]
@@ -75,10 +81,16 @@ flowchart LR
     Handlers --> AIClient
     Handlers --> NotionClient
     Handlers --> RewardEngine
+    Handlers --> PrefManager
     AIClient --> Prompts
     NotionClient --> Tasks
+    NotionClient --> Preferences
     Tasks --> Task
+    Preferences --> UserPrefs
     AIClient --> Task
+    AIClient --> PrefContext
+    PrefManager --> PrefContext
+    PrefManager --> Preferences
     RewardEngine --> RewardDelivery
     RewardDelivery --> HomeAudio
     RewardDelivery --> SMS
@@ -92,6 +104,7 @@ sequenceDiagram
     participant User
     participant UI as Chat UI
     participant Server as Go Server
+    participant Prefs as Preference Manager
     participant Claude as Claude API
     participant Notion as Notion API
     participant HomeAudio as Home Audio
@@ -103,15 +116,19 @@ sequenceDiagram
     Claude-->>Server: Intent + parameters
 
     alt Task Intake
-        Server->>Claude: Extract task details + complexity
-        Claude-->>Server: Labels + estimates + breakdown (if needed)
+        Server->>Prefs: Get user preferences
+        Prefs->>Notion: Fetch preferences
+        Notion-->>Prefs: User preference data
+        Prefs-->>Server: Preference context block
+        Server->>Claude: Extract task details + preferences context
+        Claude-->>Server: Labels + personalized breakdown
         alt Simple Task
             Server->>Notion: Create single task
         else Complex Task
             Server->>Notion: Create parent + sub-tasks (hidden)
         end
         Notion-->>Server: Task ID(s)
-        Server-->>UI: Confirmation message (first sub-task if complex)
+        Server-->>UI: Confirmation with personalized steps
     else Task Selection
         Server->>Notion: Fetch pending tasks (exclude has_subtasks)
         Notion-->>Server: Task list
@@ -203,8 +220,9 @@ flowchart TD
     subgraph Processing["Server Processing"]
         Intent[Intent Detection]
         Intake[Task Intake]
+        PrefLookup[Preference Lookup]
         Complexity[Complexity Evaluation]
-        Breakdown[Task Breakdown]
+        Breakdown[Personalized Breakdown]
         Select[Task Selection]
         Complete[Completion Handler]
         Reject[Rejection Handler]
@@ -213,6 +231,7 @@ flowchart TD
 
     subgraph Storage["Notion Database"]
         DB[(Tasks Table)]
+        Prefs[(User Preferences)]
     end
 
     subgraph Output["User Output"]
@@ -226,7 +245,9 @@ flowchart TD
     Intent -->|"reject"| Reject
     Intent -->|"cannot finish"| CannotFinish
 
-    Intake --> Complexity
+    Intake --> PrefLookup
+    PrefLookup -->|Get preferences| Prefs
+    PrefLookup --> Complexity
     Complexity -->|Simple| DB
     Complexity -->|Complex| Breakdown
     Breakdown -->|Create parent + sub-tasks| DB
@@ -236,7 +257,8 @@ flowchart TD
     Reject -->|Update notes| DB
 
     CannotFinish -->|Ask progress| Response
-    CannotFinish -->|Create sub-tasks| Breakdown
+    CannotFinish --> PrefLookup
+    PrefLookup --> Breakdown
 
     Intake --> Response
     Select --> Response
@@ -286,6 +308,7 @@ flowchart TB
 | `ANTHROPIC_API_KEY` | Claude API authentication |
 | `NOTION_API_KEY` | Notion integration token |
 | `NOTION_DATABASE_ID` | Tasks database identifier |
+| `NOTION_PREFERENCES_DB_ID` | User preferences database identifier |
 | `PORT` | HTTP server port (default: 8080) |
 
 ### Reward System (Optional)
