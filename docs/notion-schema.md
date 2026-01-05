@@ -1,3 +1,8 @@
+---
+layout: default
+title: Notion Schema
+---
+
 # Notion Database Schema
 
 ## Overview

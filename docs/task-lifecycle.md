@@ -1,3 +1,8 @@
+---
+layout: default
+title: Task Lifecycle
+---
+
 # Task Lifecycle
 
 ## Overview

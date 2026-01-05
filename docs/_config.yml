@@ -1,0 +1,10 @@
+title: hide-my-list Documentation
+description: Documentation for the hide-my-list AI-powered task manager
+remote_theme: pages-themes/cayman@v0.2.0
+
+markdown: kramdown
+kramdown:
+  input: GFM
+
+plugins:
+  - jekyll-remote-theme

@@ -1,3 +1,8 @@
+---
+layout: default
+title: System Architecture
+---
+
 # hide-my-list: System Architecture
 
 ## Overview

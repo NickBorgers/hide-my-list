@@ -1,3 +1,8 @@
+---
+layout: default
+title: AI Prompts
+---
+
 # AI Prompts & Interaction Design
 
 ## Overview
