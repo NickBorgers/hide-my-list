@@ -135,45 +135,74 @@ flowchart TD
     end
 ```
 
-## Phase 2.5: Complexity Evaluation & Breakdown
+## Phase 2.5: Sub-task Generation (All Tasks)
 
-After labeling, the AI evaluates whether a task needs to be broken down into sub-tasks. **Sub-tasks are always hidden from the user.**
+After labeling, the AI **always** generates a series of actionable sub-tasks for every task. This is a core principle: **users interpret vague goals as infinite, and thus avoid them.** By providing clear, specific sub-tasks upfront, we give users a defined path forward.
+
+**Key Principle:** Every task, no matter how simple it appears, gets explicit sub-tasks that define exactly what "done" looks like.
 
 ```mermaid
 flowchart TD
-    Labeled([Task Labeled]) --> Evaluate{Complexity Check}
+    Labeled([Task Labeled]) --> Generate[Generate sub-tasks for ALL tasks]
 
-    Evaluate -->|Simple task| SaveDirect[Save single task]
-    Evaluate -->|Complex task| Breakdown[Generate sub-tasks]
+    Generate --> Evaluate{Task size?}
 
-    Breakdown --> CreateHidden[Create sub-tasks in Notion<br/>Hidden from user]
+    Evaluate -->|Small task<br/>15-30 min| InlineSteps[Store sub-tasks inline<br/>Present as numbered steps]
+    Evaluate -->|Medium/Large task<br/>> 30 min| CreateHidden[Create sub-tasks in Notion<br/>Hidden from user]
+
+    InlineSteps --> Ready([Task ready for selection])
     CreateHidden --> LinkParent[Link to parent task]
     LinkParent --> SaveParent[Save parent as container]
-
-    SaveDirect --> Ready([Task ready for selection])
     SaveParent --> Ready
 ```
 
-### Complexity Signals
+### Why All Tasks Get Sub-tasks
+
+```mermaid
+flowchart LR
+    subgraph Problem["The Problem"]
+        Vague["'Call mom'<br/>Feels unbounded"]
+        Infinite["User imagines<br/>infinite scope"]
+        Avoidance["Task avoidance"]
+    end
+
+    subgraph Solution["The Solution"]
+        Specific["'Call mom'<br/>1. Find quiet spot<br/>2. Dial and greet<br/>3. Ask about health<br/>4. Wrap up"]
+        Bounded["Clear, finite steps"]
+        Action["User takes action"]
+    end
+
+    Problem --> Solution
+```
+
+### Sub-task Generation Rules
+
+| Task Type | Sub-task Approach | Example |
+|-----------|-------------------|---------|
+| Quick (15 min) | 2-3 inline steps | "Call mom" → 1. Find quiet spot, 2. Make call, 3. Note any follow-ups |
+| Standard (30-60 min) | 3-5 inline steps | "Review proposal" → 1. Read intro, 2. Check numbers, 3. Note concerns, 4. Draft feedback |
+| Large (60+ min) | Hidden sub-tasks | "Complete report" → 4 separate tasks in Notion |
+
+### Complexity Signals (For Hidden vs. Inline)
 
 ```mermaid
 flowchart TD
-    subgraph Triggers["Breakdown Triggers"]
+    subgraph Triggers["Hidden Sub-task Triggers"]
         Vague["Vague scope<br/>'complete', 'finish', 'work on'"]
-        Long["Long duration<br/>> 90 minutes estimated"]
+        Long["Long duration<br/>> 60 minutes estimated"]
         Multi["Multiple phases<br/>research + draft + review"]
         Deliverables["Multiple outputs<br/>'prepare and send'"]
     end
 
-    subgraph Decision["Breakdown Decision"]
-        Break[needs_breakdown = true]
-        Simple[needs_breakdown = false]
+    subgraph Decision["Storage Decision"]
+        Hidden[Store as separate Notion tasks]
+        Inline[Store as inline steps in task description]
     end
 
-    Vague --> Break
-    Long --> Break
-    Multi --> Break
-    Deliverables --> Break
+    Vague --> Hidden
+    Long --> Hidden
+    Multi --> Hidden
+    Deliverables --> Hidden
 ```
 
 ### Sub-task Structure
@@ -201,7 +230,37 @@ flowchart TD
     P --> S4
 ```
 
-**User Experience:** The user never sees this structure. When they request a task, they receive: "How about drafting the outline for the Q4 report? Should take about 30 minutes."
+**User Experience:** When a task is suggested, the user sees the actionable first step along with a brief summary of what completing the full task involves:
+
+- For inline steps: "How about calling mom? Here's the plan: 1) Find a quiet spot, 2) Make the call, 3) Note any follow-ups. Should take about 15 minutes."
+- For hidden sub-tasks: "How about drafting the outline for the Q4 report? This is the first of 4 steps to complete the full report. Should take about 30 minutes."
+
+### On-Demand Breakdown Assistance
+
+The agent must always stand ready to help users further break down tasks. When a user starts a task or expresses hesitation, the agent proactively offers specific suggestions for how to approach the work.
+
+```mermaid
+flowchart TD
+    UserStarts([User accepts task]) --> Offer[Agent offers breakdown assistance]
+
+    Offer --> UserReady{"User response?"}
+    UserReady -->|"Just tell me what to do"| Prescriptive[Provide exact first action]
+    UserReady -->|"What are my steps?"| ShowSteps[Show all sub-tasks]
+    UserReady -->|"I got it"| Proceed[Let user proceed]
+    UserReady -->|Hesitation detected| Probe[Ask what feels unclear]
+
+    Probe --> Clarify[Provide more specific breakdown]
+    Prescriptive --> Work([User works])
+    ShowSteps --> Work
+    Proceed --> Work
+    Clarify --> Work
+```
+
+**Key Behaviors:**
+- Agent never assumes user knows what to do next
+- Agent always has specific, concrete next actions ready
+- If user seems stuck, agent proactively offers smaller sub-tasks
+- User should never have to figure out "how" on their own
 
 ### Task Reframing
 

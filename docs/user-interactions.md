@@ -15,6 +15,7 @@ flowchart TD
     Detect --> Complete["COMPLETE<br/>Finished task"]
     Detect --> Reject["REJECT<br/>Don't want this task"]
     Detect --> CannotFinish["CANNOT_FINISH<br/>Task too large"]
+    Detect --> NeedHelp["NEED_HELP<br/>Wants breakdown assistance"]
     Detect --> CheckIn["CHECK_IN<br/>System follow-up"]
     Detect --> Chat["CHAT<br/>General conversation"]
 
@@ -23,6 +24,7 @@ flowchart TD
     Complete --> CompletionFlow[Completion Flow]
     Reject --> RejectionFlow[Rejection Flow]
     CannotFinish --> BreakdownFlow[Task Breakdown Flow]
+    NeedHelp --> AssistFlow[Breakdown Assistance Flow]
     CheckIn --> CheckInFlow[Check-In Flow]
     Chat --> ChatResponse[Conversational Response]
 ```
@@ -36,6 +38,7 @@ flowchart TD
 | COMPLETE | "Done", "Finished", "Completed", "I did it" |
 | REJECT | "Not that one", "Something else", "I don't want to" |
 | CANNOT_FINISH | "This is too big", "I can't finish this", "Too much for one sitting" |
+| NEED_HELP | "How do I start?", "What should I do first?", "I'm stuck", "Break this down" |
 | CHECK_IN | System-initiated (timer triggered, not user message) |
 | CHAT | "Hello", "How does this work?", "What's in my list?" |
 
@@ -464,7 +467,7 @@ flowchart LR
 ```
 
 **Key Principles:**
-- Sub-task breakdown is NEVER shown to the user
+- Sub-task breakdown is NEVER shown to the user as a full list
 - Each sub-task should be completable in one sitting (typically 15-90 min)
 - The AI presents only the current actionable sub-task
 - Parent task only completes when all sub-tasks are done
@@ -480,7 +483,121 @@ flowchart LR
 
 ---
 
-## Flow 6: Check-In Follow-Up
+## Flow 6: Breakdown Assistance (On-Demand Help)
+
+A core principle of hide-my-list: **users interpret vague goals as infinite, and thus avoid them.** The agent must always be ready to help users understand exactly what to do next. This flow handles when users need help starting or continuing a task.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant AI as AI Assistant
+
+    AI->>U: "How about writing the project proposal?"
+    U->>AI: "Sure"
+    AI->>U: "Great! Here's the plan:<br/>1. Open a new doc<br/>2. Write the problem statement (2-3 sentences)<br/>3. List 3 proposed solutions<br/>4. Add timeline estimate<br/>Start with step 1 - let me know when you're ready for the next!"
+
+    Note over U,AI: User works on step 1
+
+    U->>AI: "What's next?"
+    AI->>U: "Step 2: Write the problem statement. Just 2-3 sentences describing what needs solving. What's the main issue this project addresses?"
+```
+
+### Breakdown Assistance Decision Tree
+
+```mermaid
+flowchart TD
+    Start([User needs help]) --> HasActive{Has active task?}
+
+    HasActive -->|Yes| Analyze[Analyze where user is stuck]
+    HasActive -->|No| GetTask[Suggest getting a task first]
+
+    Analyze --> StuckType{What kind of stuck?}
+
+    StuckType -->|"How do I start?"| FirstStep[Provide exact first action]
+    StuckType -->|"What are all the steps?"| ShowPlan[Show numbered steps]
+    StuckType -->|"This step is too big"| BreakStep[Break current step smaller]
+    StuckType -->|"I don't understand"| Clarify[Explain the step differently]
+
+    FirstStep --> Specific["Open your browser and go to [specific URL]"]
+    ShowPlan --> Numbered["1. Do X (5 min)<br/>2. Do Y (10 min)<br/>3. Do Z (5 min)"]
+    BreakStep --> Smaller["Let's make that smaller:<br/>First, just [micro-action]"]
+    Clarify --> Rephrase["Here's another way to think about it..."]
+```
+
+### Proactive Assistance Triggers
+
+The agent should proactively offer breakdown assistance when it detects:
+
+| Signal | Agent Response |
+|--------|----------------|
+| Long pause after accepting task | "Need help getting started? I can break this down further." |
+| "Hmm" / "Uh" / hesitation words | "Want me to walk you through the steps?" |
+| "I guess" / uncertain acceptance | "Let me give you a clear starting point..." |
+| User returns without completing | "Picking this back up? Here's where you left off and what's next." |
+
+### Assistance Response Levels
+
+```mermaid
+flowchart LR
+    subgraph Level1["Level 1: Overview"]
+        L1["Here are the 4 steps..."]
+    end
+
+    subgraph Level2["Level 2: Current Step"]
+        L2["Focus on step 2: Do X"]
+    end
+
+    subgraph Level3["Level 3: Micro-Action"]
+        L3["Right now, just open the file"]
+    end
+
+    subgraph Level4["Level 4: Hand-Holding"]
+        L4["Click File > New > Document"]
+    end
+
+    Level1 --> Level2 --> Level3 --> Level4
+```
+
+The agent adjusts detail level based on user signals:
+- Confident user → Level 1-2
+- Uncertain user → Level 2-3
+- Stuck user → Level 3-4
+- Very stuck user → Level 4 with encouragement
+
+### Assistance Conversation Examples
+
+**User needs starting help:**
+```
+User: "Sure, I'll do the proposal"
+AI: "Perfect! Let's make this concrete:
+     1. Open Google Docs and create a new file
+     2. Title it 'Project Proposal - [Date]'
+     3. Write one sentence: What problem are you solving?
+
+     Just do step 1 right now. Ready when you are!"
+```
+
+**User stuck mid-task:**
+```
+User: "I'm stuck on this"
+AI: "No problem - where did you get to? Tell me the last thing you finished and I'll point you to the exact next action."
+```
+
+**User wants the full picture:**
+```
+User: "What are all the steps?"
+AI: "Here's the full breakdown:
+     1. Problem statement (5 min) ← you are here
+     2. Solution options (10 min)
+     3. Timeline (5 min)
+     4. Quick review (5 min)
+
+     Total: ~25 min. Want to start with the problem statement?"
+```
+
+---
+
+## Flow 7: Check-In Follow-Up
 
 When a user accepts a task, the system sets a timer for 1.25x the estimated completion time. If the timer expires before the user marks the task complete, the system proactively follows up.
 
@@ -611,7 +728,7 @@ flowchart LR
 
 ---
 
-## Flow 7: Special Cases
+## Flow 8: Special Cases
 
 ### Empty Queue
 

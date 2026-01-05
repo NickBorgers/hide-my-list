@@ -21,6 +21,7 @@ erDiagram
         number rejection_count "Times rejected"
         rich_text rejection_notes "Append-only log"
         rich_text ai_context "Intake conversation"
+        rich_text inline_steps "Numbered steps for simple tasks"
         relation parent_task_id FK "Parent task (if sub-task)"
         number sequence "Order within parent (1, 2, 3...)"
         rich_text progress_notes "What user accomplished"
@@ -274,6 +275,39 @@ AI: Added - focused work, ~30 min, moderate urgency.
 - Debugging label assignments
 - Providing context when task is suggested
 - Improving future intake prompts
+
+---
+
+### InlineSteps (rich text)
+
+Stores the numbered action steps for simple tasks (those not requiring hidden sub-tasks).
+
+```
+Format:
+1. Find a quiet spot
+2. Make the call
+3. Note any follow-ups needed
+```
+
+**Core Principle:** Users interpret vague goals as infinite, and thus avoid them. By always providing concrete steps, we make every task feel achievable.
+
+**Used for:**
+- Showing users exactly what to do when they accept a task
+- Providing on-demand breakdown assistance
+- Guiding users through task completion step-by-step
+
+**When populated:**
+- All tasks with `time_estimate` ≤ 60 minutes
+- All standalone tasks (no parent_task_id)
+- Even "simple" tasks like "Call mom" get inline steps
+
+**Example values:**
+
+| Task | Inline Steps |
+|------|--------------|
+| Call mom | 1. Find quiet spot\n2. Make call\n3. Note any follow-ups |
+| Review proposal | 1. Read intro\n2. Check numbers\n3. Note concerns\n4. Draft feedback |
+| Pay bills | 1. Open banking app\n2. Find payee\n3. Enter amount and pay |
 
 ---
 
