@@ -490,7 +490,7 @@ flowchart LR
 
 | Scenario | Response Template |
 |----------|-------------------|
-| First time | "Now we know this task's real size. I've broken it into smaller pieces — ready for the first chunk?" |
+| First time | "Now we know this task's real size. What did you get into so far?" |
 | Already broken | "Still too big — that's useful info. Let me find an even smaller piece to start with." |
 | Can't break further | "This is pretty focused already. What's the specific part that's hard?" |
 | Making progress | "Nice — one piece done! Ready for the next bit?" |

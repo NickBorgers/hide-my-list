@@ -55,7 +55,7 @@ OUTPUT (JSON):
 
 The user sees ONLY progress_question or next_sub_task_message — the full
 shame-safe reply lives in that field. No field ever repeats the user's
-message back; the application drops any echoed content rather than sending it.
+message back; legacy non-user-facing echo fields are ignored rather than sent.
 ```
 
 ### Progress Question Templates (Shame-Safe)
