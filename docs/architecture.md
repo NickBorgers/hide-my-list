@@ -163,7 +163,7 @@ require auth, set it to any non-empty placeholder in the runtime environment.
 | `REMINDER_QUIET_END_HOUR` | User-local quiet-hours end for deadline reminders (default `8`) |
 | `SIGNAL_RECEIVE_IDLE_TIMEOUT_SECONDS` | Receive WebSocket idle deadline before reconnect (default `300`) |
 | `SIGNAL_INGRESS_SILENCE_CHECK_INTERVAL_MINUTES` | Interval for `signal_ingress_silence` job (default `60`) |
-| `SIGNAL_INBOUND_SILENCE_ALERT_THRESHOLD_SECONDS` | Inbound silence duration before critical ops alert (default `129600`, 36 hours) |
+| `SIGNAL_INBOUND_SILENCE_ALERT_THRESHOLD_SECONDS` | Inbound silence duration before structured warning log (default `129600`, 36 hours) |
 
 ## Outbound Dependencies
 
