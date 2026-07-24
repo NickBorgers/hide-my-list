@@ -139,7 +139,7 @@ async def send_pending_ops_alerts() -> None:
 
 
 async def check_signal_ingress_silence() -> None:
-    """Enqueue an ops alert when authorized Signal ingress has been quiet too long."""
+    """Log a warning when authorized Signal ingress has been quiet too long."""
     from app.tools.signal_ingress_health import check_inbound_silence
 
     try:

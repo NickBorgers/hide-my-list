@@ -3,8 +3,8 @@
 Verifies:
   - record_inbound_message upserts last_inbound_at in signal_ingress_health.
   - check_inbound_silence returns False and does not alert below threshold.
-  - check_inbound_silence returns True and enqueues a critical alert above threshold.
-  - check_inbound_silence returns True and enqueues an alert when no marker row exists.
+  - check_inbound_silence returns True and logs (does not enqueue) above threshold.
+  - check_inbound_silence returns True and logs (does not enqueue) when no marker row exists.
 
 Tests require a live DATABASE_URL. Skipped otherwise.
 
@@ -113,8 +113,8 @@ async def test_check_inbound_silence_no_alert_below_threshold(db_conn: Any) -> N
 
 
 @pytest.mark.asyncio
-async def test_check_inbound_silence_alerts_above_threshold(db_conn: Any) -> None:
-    """check_inbound_silence returns True and enqueues a critical alert above threshold."""
+async def test_check_inbound_silence_logs_but_does_not_alert_above_threshold(db_conn: Any) -> None:
+    """check_inbound_silence returns True but does not enqueue an alert above threshold."""
     from app.tools.signal_ingress_health import check_inbound_silence, record_inbound_message
 
     now = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
@@ -129,15 +129,12 @@ async def test_check_inbound_silence_alerts_above_threshold(db_conn: Any) -> Non
         alerted = await check_inbound_silence(now=now)
 
     assert alerted is True
-    enqueue.assert_awaited_once()
-    kwargs = enqueue.await_args.kwargs
-    assert kwargs["kind"] == "signal_ingress_silent"
-    assert kwargs["severity"] == "critical"
+    enqueue.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_check_inbound_silence_alerts_when_no_marker_row(db_conn: Any) -> None:
-    """check_inbound_silence alerts with unknown-duration message when no row exists."""
+async def test_check_inbound_silence_does_not_alert_when_no_marker_row(db_conn: Any) -> None:
+    """check_inbound_silence returns True but does not enqueue an alert when no row exists."""
     from app.tools.signal_ingress_health import check_inbound_silence
 
     now = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
@@ -147,11 +144,7 @@ async def test_check_inbound_silence_alerts_when_no_marker_row(db_conn: Any) -> 
         alerted = await check_inbound_silence(now=now)
 
     assert alerted is True
-    enqueue.assert_awaited_once()
-    kwargs = enqueue.await_args.kwargs
-    assert kwargs["kind"] == "signal_ingress_silent"
-    assert kwargs["severity"] == "critical"
-    assert "unknown" in kwargs["body"]
+    enqueue.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
