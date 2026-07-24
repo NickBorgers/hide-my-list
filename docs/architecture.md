@@ -122,7 +122,7 @@ duplicate delivery over loss.
 | `state_audit` | Daily 03:00 USER_TZ | VACUUM + prune `recent_outbound` (90-day retention) |
 | `reminder_scheduler` | Daily 04:00 USER_TZ | Schedule missing deadline reminder series and refresh edited deadlines |
 | `weekly_recap` | Sun 18:00 USER_TZ | Generate weekly recap |
-| `signal_ingress_silence` | 60 min (configurable) | Read `signal_ingress_health`; enqueue critical ops alert when inbound silence exceeds threshold |
+| `signal_ingress_silence` | 60 min (configurable) | Read `signal_ingress_health`; log a warning when inbound silence exceeds threshold |
 
 ## Model Routing
 

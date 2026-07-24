@@ -17,7 +17,9 @@ weeks without processed inbound traffic looked the same as a quiet user.
 - `app/tools/signal_ingress_health.py` stores the last authorized inbound item in
   Postgres and checks it against an env-configurable silence threshold.
 - `app/scheduler/jobs.py` registers a recurring `signal_ingress_silence` job
-  that enqueues a throttled critical ops alert when the durable marker is stale.
+  that logs a warning when the durable marker is stale. Silence is expected on
+  low-traffic instances that do not receive a message every day, so it is
+  recorded as a log event rather than a paging ops alert.
 
 ## Regression Tests
 
@@ -25,5 +27,5 @@ Tests live in this directory:
 
 - `test_receive_idle_timeout.py` asserts a WebSocket that opens and then goes
   silent is closed and reconnected.
-- `test_signal_ingress_health.py` asserts the silence detector enqueues past the
-  threshold and stays quiet below it.
+- `test_signal_ingress_health.py` asserts the silence detector logs (and does
+  not enqueue an ops alert) past the threshold and stays quiet below it.

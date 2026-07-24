@@ -41,7 +41,7 @@ The Python/LangGraph application. Safe to edit via PRs.
 
 - `app/tools/notion.py` — Notion API client (12 verbs + health_check + verify_schema)
 - `app/tools/signal_client.py` — Signal bridge async client
-- `app/tools/signal_ingress_health.py` — Durable Signal ingress liveness marker; `record_inbound_message` upserts last-inbound timestamp, `check_inbound_silence` enqueues a critical ops alert when the threshold is exceeded
+- `app/tools/signal_ingress_health.py` — Durable Signal ingress liveness marker; `record_inbound_message` upserts last-inbound timestamp, `check_inbound_silence` logs a warning when the threshold is exceeded
 - `app/tools/reminders.py` — Reminder outbox CRUD
 - `app/tools/rewards.py` — Reward delivery (emoji + image; v1 scope)
 - `app/tools/ops_alerts.py` — Ops alert enqueue + drain

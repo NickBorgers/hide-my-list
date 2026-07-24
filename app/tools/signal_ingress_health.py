@@ -47,21 +47,6 @@ def _silence_threshold_seconds() -> int:
     return value
 
 
-def _format_duration(delta: timedelta) -> str:
-    total_seconds = max(0, int(delta.total_seconds()))
-    days, remainder = divmod(total_seconds, 86_400)
-    hours, remainder = divmod(remainder, 3_600)
-    minutes, _ = divmod(remainder, 60)
-    parts: list[str] = []
-    if days:
-        parts.append(f"{days}d")
-    if hours:
-        parts.append(f"{hours}h")
-    if minutes or not parts:
-        parts.append(f"{minutes}m")
-    return " ".join(parts)
-
-
 async def record_inbound_message(*, received_at: datetime | None = None) -> None:
     """Persist that an authorized inbound Signal item reached the app."""
     timestamp = received_at or _now()
@@ -81,12 +66,13 @@ async def record_inbound_message(*, received_at: datetime | None = None) -> None
 
 
 async def check_inbound_silence(*, now: datetime | None = None) -> bool:
-    """Enqueue a throttled ops alert when Signal ingress has been quiet too long.
+    """Log a warning when Signal ingress has been quiet longer than the threshold.
 
-    Returns True when an alert was enqueued and False otherwise.
+    Prolonged inbound silence is expected on low-traffic instances — we do not
+    send a message every day — so it is recorded as a structured log event rather
+    than a paging ops alert. Returns True when silence exceeded the threshold (or
+    no durable marker exists) and False otherwise.
     """
-    from app.tools import ops_alerts
-
     checked_at = now or _now()
     threshold_seconds = _silence_threshold_seconds()
     threshold = timedelta(seconds=threshold_seconds)
@@ -103,15 +89,7 @@ async def check_inbound_silence(*, now: datetime | None = None) -> bool:
         row = await cursor.fetchone()
 
     if row is None:
-        await ops_alerts.enqueue(
-            kind="signal_ingress_silent",
-            body=(
-                "Signal ingress has no durable last-inbound marker; "
-                "silence duration is unknown and requires investigation."
-            ),
-            severity="critical",
-        )
-        log.warning("signal_ingress_health.missing_marker_alerted")
+        log.warning("signal_ingress_health.missing_marker")
         return True
 
     last_inbound_at: datetime = row["last_inbound_at"]
@@ -124,20 +102,10 @@ async def check_inbound_silence(*, now: datetime | None = None) -> bool:
         )
         return False
 
-    duration_text = _format_duration(silence_duration)
-    threshold_text = _format_duration(threshold)
-    await ops_alerts.enqueue(
-        kind="signal_ingress_silent",
-        body=(
-            "Signal ingress has been silent for "
-            f"{duration_text}; threshold is {threshold_text}. "
-            f"Last inbound at {last_inbound_at.isoformat()}."
-        ),
-        severity="critical",
-    )
     log.warning(
-        "signal_ingress_health.silence_alerted",
+        "signal_ingress_health.silent",
         silence_seconds=int(silence_duration.total_seconds()),
         threshold_seconds=threshold_seconds,
+        last_inbound_at=last_inbound_at.isoformat(),
     )
     return True
