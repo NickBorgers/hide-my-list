@@ -11,8 +11,8 @@ peer: "<test-peer-7>"
 inbound: "this is too big, I can't finish it"
 prior_state:
   active_task:
-    notion_page_id: "<placeholder-page-id>"
-    title: "<placeholder-task>"
+    page_id: "<placeholder-page-id>"
+    title: "Clean out the garage"
   conversation_state: active
 contracts:
   - kind: shame_safe

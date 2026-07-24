@@ -1,19 +1,17 @@
 ---
-# Surface: a reminder phrased as a DEADLINE with no explicit
-# "remind me" trigger word — "<chore> <weekday> before <time>". Intake
-# must still return is_reminder=true with a parseable remind_at at the
-# named wall-clock deadline, so the outbox/ledger gets a row and the
-# reminder fires.
+# Surface: a task with a deadline phrased as "<chore> <weekday> before
+# <time>" and no notification-intent word ("remind me", "ping me"). Per
+# docs/ai-prompts/intake.md this is DEADLINE detection, not reminder
+# detection: intake sets due_at to the named wall-clock bound (Friday
+# 22:00 local) and the deadline reminder series is scheduled from due_at.
+# The user-visible confirmation must acknowledge the deadline — a
+# confirmation that silently drops "Friday before 10pm" leaves the user
+# believing the time bound was captured when it wasn't.
 #
-# An underpowered medium-tier model (observed: gemma4-small) cannot emit
-# intake's structured JSON for this phrasing: it runs to the output-token
-# ceiling and produces truncated/unparseable JSON. intake_node's
-# _parse_intake_response then SILENTLY falls back to a default dict with
-# is_reminder=false / remind_at=null, takes the no_reminder branch, saves
-# a plain task, and replies "Got it — added." No reminder is ever
-# scheduled — the user believes one was. This fixture catches that:
-# a capable model confirms a reminder; the fallback's generic
-# "added" confirmation fails the regex_require below.
+# An underpowered medium-tier model may also fail here by emitting
+# truncated/unparseable JSON; intake_node then takes the honest
+# parse-failure path, which says timing was NOT captured — that reply
+# fails the judge contract below, as it should.
 id: intake-remind-deadline-before-time-001
 node: intake
 tier: medium
@@ -25,18 +23,20 @@ prior_state:
   user_prefs:
     timezone: America/Chicago
 contracts:
-  # Deterministic discriminator: the user-visible confirmation must
-  # acknowledge a reminder. The silent-fallback path emits only
-  # "Got it — added." (no reminder language) and fails here.
+  # Deterministic discriminator: the confirmation must carry the deadline.
+  # A generic "Got it — added" with no time bound fails here.
   - kind: regex_require
-    pattern: "(?i)(remind|reminder)"
+    pattern: "(?i)(friday|deadline|due|by\\s*10|before\\s*10)"
+  - kind: regex_forbid
+    pattern: "(?i)(cron|worker|queue|outbox|notion)"
   - kind: judge
     rubric: |
-      The user-visible response confirms a reminder/nudge was set for the
-      stated deadline (Friday, before ~10pm) AND names what it is for
-      (cleaning the kitchen). It does NOT merely confirm a task was added
-      without a reminder, and does NOT mention internal infrastructure
-      (cron, worker, queue, outbox). Score 1.0 when it confirms a
-      deadline reminder for the task, 0.5 for a reminder without the
-      deadline or task, 0.0 for a task-only "added" confirmation.
+      The user-visible response confirms the task was captured WITH its
+      deadline: it acknowledges the Friday-before-10pm (or equivalent
+      phrasing of that evening) time bound. It does NOT mention internal
+      infrastructure (cron, worker, queue, outbox). Score 1.0 when the
+      confirmation clearly ties the task to the Friday deadline, 0.5 when
+      it confirms a deadline without the specific day/time, 0.0 for a
+      task-only confirmation with no deadline or an admission that timing
+      was not captured.
     threshold: 0.7

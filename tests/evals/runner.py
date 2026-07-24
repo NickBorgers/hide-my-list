@@ -20,6 +20,14 @@ Privacy: fixtures contain only placeholder data per the rig spec.
 The runner emits judge prompts with the fixture's inbound + model's
 response. Both are placeholders by convention.
 
+Scoring surfaces: nodes write the literal `{task}` token in message bodies
+and `send_node` substitutes the exact stored title before delivery
+(`app/graph/nodes/_task_token.py`). The runner mirrors that split:
+regex/json contracts score the RAW draft body (so fixtures can assert the
+token invariant), while judge/shame_safe contracts score the DELIVERED body
+with the token substituted (what the user actually reads — a judge scoring
+the raw token would ding it as an unfilled placeholder).
+
 Invocation:
     ENABLE_LIVE_LLM_EVALS=true \\
     EVAL_MODELS=claude-haiku-4-5,gemma4-small \\
@@ -286,9 +294,20 @@ _CONTRACT_EVALUATORS = {
 }
 
 
-def evaluate_contracts(contracts: list[Contract], response: str) -> list[ContractResult]:
+# Contract kinds scored against the delivered (token-substituted) body rather
+# than the raw draft body. See "Scoring surfaces" in the module docstring.
+_DELIVERED_SURFACE_KINDS = frozenset({"judge", "shame_safe"})
+
+
+def evaluate_contracts(
+    contracts: list[Contract],
+    response: str,
+    delivered_response: str | None = None,
+) -> list[ContractResult]:
+    delivered = delivered_response if delivered_response is not None else response
     results: list[ContractResult] = []
     for c in contracts:
+        surface = delivered if c.kind in _DELIVERED_SURFACE_KINDS else response
         evaluator = _CONTRACT_EVALUATORS.get(c.kind)
         if evaluator is None:
             results.append(
@@ -300,7 +319,7 @@ def evaluate_contracts(contracts: list[Contract], response: str) -> list[Contrac
             )
             continue
         try:
-            results.append(evaluator(c.spec, response))
+            results.append(evaluator(c.spec, surface))
         except Exception as exc:  # noqa: BLE001
             results.append(
                 ContractResult(
@@ -389,13 +408,15 @@ def _install_notion_stub(fixture: Fixture) -> Callable[[], None]:
     return _undo
 
 
-def _invoke_node(node: str, fixture: Fixture) -> str:
-    """Run the named graph node against the fixture and return its text response.
+def _invoke_node(node: str, fixture: Fixture) -> tuple[str, str | None]:
+    """Run the named graph node against the fixture.
+
+    Returns `(body, notion_page_title)` from the first `pending_outbound`
+    draft the node populates — the raw draft body plus the title `send_node`
+    would substitute for the `{task}` token at delivery time.
 
     Each node has its own signature in `app/graph/nodes/<node>.py`. We
     import lazily and call the canonical `<node>_node(state)` function.
-    The response we score is the body of the first `pending_outbound` draft
-    the node populates — that's what the user actually sees.
 
     Nodes wrap their body in a try/except that returns a hand-written
     fallback message on any failure. Those fallbacks are shame-safe by
@@ -413,6 +434,16 @@ def _invoke_node(node: str, fixture: Fixture) -> str:
         "incoming": fixture.inbound,
         **fixture.prior_state,
     }
+    # Static fixtures cannot carry a fresh timestamp, but nodes treat a
+    # missing or stale `selected_at` as "no active task" (24h TTL in
+    # complete_node). Inject run-time now so the fixture's active task is
+    # actually active. Fixtures that want the stale path set it explicitly.
+    active = state.get("active_task")
+    if isinstance(active, dict) and "selected_at" not in active:
+        state["active_task"] = {  # type: ignore[typeddict-item]
+            **active,
+            "selected_at": datetime.now(UTC).isoformat(),
+        }
     # Fixtures declare prior messages as `{role, content}` YAML mappings, but
     # nodes read LangChain message objects via getattr — a plain dict silently
     # yields empty strings, dropping the fixture's conversational context.
@@ -446,7 +477,7 @@ def _invoke_node(node: str, fixture: Fixture) -> str:
                     "scoring it would be meaningless. Fix the underlying error before "
                     "trusting this fixture."
                 )
-        return str(classified.get("intent") or "")
+        return str(classified.get("intent") or ""), None
 
     module_path = f"app.graph.nodes.{node}"
     import importlib  # noqa: PLC0415
@@ -482,9 +513,12 @@ def _invoke_node(node: str, fixture: Fixture) -> str:
         raise RuntimeError(f"{fn_name} returned non-dict: {type(update).__name__}")
     pending = update.get("pending_outbound") or []
     if not pending:
-        return ""
+        return "", None
     first = pending[0]
-    return str(first.get("body", "") if isinstance(first, dict) else first)
+    if not isinstance(first, dict):
+        return str(first), None
+    title = first.get("notion_page_title")
+    return str(first.get("body", "")), str(title) if title else None
 
 
 # ---------------------------------------------------------------------------
@@ -548,11 +582,15 @@ def _budget_usd() -> float:
 
 def _run_one(fixture: Fixture, model: str) -> FixtureRunResult:
     """Run a single (fixture, model) and evaluate contracts."""
+    from app.graph.nodes._task_token import render_task_token  # noqa: PLC0415
+
     start = time.monotonic()
     try:
         with ModelSwap(tier=fixture.tier, model=model):
-            response = _invoke_node(fixture.node, fixture)
-        contracts = evaluate_contracts(fixture.contracts, response)
+            response, page_title = _invoke_node(fixture.node, fixture)
+        # What send_node would deliver: judge/shame_safe score this surface.
+        delivered = render_task_token(response, title=page_title)
+        contracts = evaluate_contracts(fixture.contracts, response, delivered)
         duration = time.monotonic() - start
         input_tokens = _rough_tokens(fixture.inbound + json.dumps(fixture.prior_state))
         output_tokens = _rough_tokens(response)
@@ -560,7 +598,7 @@ def _run_one(fixture: Fixture, model: str) -> FixtureRunResult:
             fixture_id=fixture.id,
             node=fixture.node,
             model=model,
-            response=response,
+            response=delivered,
             contracts=contracts,
             duration_seconds=duration,
             estimated_cost_usd=_estimate_cost_usd(model, input_tokens, output_tokens),

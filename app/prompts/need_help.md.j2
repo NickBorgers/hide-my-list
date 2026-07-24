@@ -43,8 +43,12 @@ Agent should detect hesitation and proactively offer help:
 
 - Overview: "Here's the plan: 1) X (5 min), 2) Y (10 min), 3) Z (5 min). Ready to start with X?"
 - Current Step: "Right now, focus on just this: [specific action]. That's it for now."
-- Micro-Action: "Don't worry about the whole thing. Just do this one tiny thing: [micro-action]"
+- Micro-Action: "Don't worry about all of {task} right now. Just do this one tiny thing: [micro-action]"
 - Hand-Holding: "Here's exactly what to do: Open [app]. Click [button]. Type [specific text]. Done!"
+
+Write the literal token {task} where user_message refers to the current task.
+Do not write the task title yourself; the application substitutes the exact
+stored title. Never refer to the task only by attribute ("this focus task").
 
 ### Shame Prevention (Mandatory)
 

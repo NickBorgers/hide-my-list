@@ -217,9 +217,26 @@ Contract kinds:
 - `judge` — qualitative rubric scored by a stronger judge LLM (defaults to `claude-sonnet-5`; override via `EVAL_JUDGE_MODEL`)
 - `shame_safe` — judge with fixed ADHD-safety rubric from `design/adhd-priorities.md`
 
-Privacy invariant: all fixtures use placeholder values (`<test-peer>`,
-`<placeholder>`, random UUIDs). No real user data in fixtures, commits, or
-judge LLM payloads.
+Scoring surfaces: nodes write the literal `{task}` token in draft bodies and
+`send_node` substitutes the exact stored title before delivery. The runner
+mirrors that split — `regex_*` and `json_schema` contracts score the RAW
+draft body (so fixtures can assert the token invariant), while `judge` and
+`shame_safe` contracts score the DELIVERED body with the token substituted
+from the draft's `notion_page_title` (what the user actually reads). Write
+rubrics against the delivered text; write token-invariant assertions as
+`regex_require: "\\{task\\}"`.
+
+`prior_state.active_task` uses the runtime `ActiveTask` shape (`page_id`,
+`title`, ...). The runner injects a fresh `selected_at` when the fixture
+omits it — a static timestamp would silently age past `complete_node`'s
+24h active-task TTL. Set `selected_at` explicitly only to test the stale
+path. Fixture task titles are fictional-but-realistic ("Fold the laundry"),
+never real user data — a `<placeholder-task>` literal reads as template
+noise to both the model under test and the judge.
+
+Privacy invariant: all fixtures use placeholder ids/peers (`<test-peer>`,
+`<placeholder-page-id>`, random UUIDs) and fictional task content. No real
+user data in fixtures, commits, or judge LLM payloads.
 
 Eval layer is PR-2. Per-node fixture coverage target: >= 5 fixtures per node
 across 9 nodes (intake, selection, chat, rejection, cannot_finish, need_help,
