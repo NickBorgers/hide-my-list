@@ -106,4 +106,4 @@ def _parse_cannot_finish_response(response_text: str) -> str:
             return "No worries — what did you get into before stopping?"
         except json.JSONDecodeError:
             pass
-    return response_text[:300] if response_text else "No worries — what did you get into before stopping?"
+    return "No worries — what did you get into before stopping?"

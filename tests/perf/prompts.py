@@ -111,7 +111,7 @@ SYNTHETIC_PROMPTS: list[Prompt] = [
             "RULES: Never imply failure. Frame progress as information. "
             "Lead with what they accomplished. "
             "Respond with JSON: "
-            '{"phase": "ask_progress", "user_message": str, "progress_question": str}.'
+            '{"phase": "ask_progress", "progress_question": str}.'
         ),
         human=(
             "I can't finish this. I got started but it's taking way longer "

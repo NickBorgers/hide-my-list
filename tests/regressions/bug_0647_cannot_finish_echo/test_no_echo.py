@@ -69,3 +69,16 @@ async def test_node_replies_with_question_not_echo(monkeypatch: Any) -> None:
     body = update["pending_outbound"][0]["body"]
     assert body == _QUESTION
     assert _ECHO not in body
+
+def test_parser_fails_closed_on_plain_text_echo() -> None:
+    """Non-JSON response echoing the user's message: must return shame-safe fallback, not the echo."""
+    echo = "this is too big, I can't finish it"
+    result = _parse_cannot_finish_response(echo)
+    assert result != echo
+    assert result == "No worries — what did you get into before stopping?"
+
+
+def test_parser_fails_closed_on_empty_text() -> None:
+    """Empty response: must return shame-safe fallback."""
+    result = _parse_cannot_finish_response("")
+    assert result == "No worries — what did you get into before stopping?"
