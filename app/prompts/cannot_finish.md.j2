@@ -53,17 +53,20 @@ CANNOT_FINISH signals original breakdown left tasks too large. New breakdown sho
 If asking for progress:
 {
   "phase": "ask_progress",
-  "user_message": "...",
   "progress_question": "..."
 }
 
 If analyzing remaining work:
 {
   "phase": "analyze_remaining",
-  "user_message": "...",
   "completed_portion": "...",
   "remaining_sub_tasks": [
     {"title": "...", "time_estimate_minutes": 0, "sequence": 1}
   ],
   "next_sub_task_message": "..."
 }
+
+The user sees ONLY progress_question (when asking for progress) or
+next_sub_task_message (when analyzing remaining work). Write the full
+shame-safe reply in that field. Never repeat the user's message back in any
+field.

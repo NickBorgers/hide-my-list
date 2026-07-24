@@ -86,14 +86,24 @@ async def cannot_finish_node(state: State) -> dict[str, Any]:
 
 
 def _parse_cannot_finish_response(response_text: str) -> str:
-    """Extract user_message from LLM JSON response."""
+    """Extract the user-facing message from the LLM JSON response.
+
+    Only `progress_question` (phase=ask_progress) and `next_sub_task_message`
+    (phase=analyze_remaining) are user-facing. Models fill any `user_message`
+    field with an echo of the user's own words, so it must never be selected —
+    replying to "this is too big" with "this is too big" is the failure mode
+    this ordering guards against.
+    """
     json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
     if json_match:
         try:
             data = json.loads(json_match.group())
-            msg = data.get("user_message") or data.get("progress_question") or data.get("next_sub_task_message")
+            msg = data.get("progress_question") or data.get("next_sub_task_message")
             if msg:
                 return str(msg)
+            # Valid JSON with no user-facing field: never send raw JSON (or an
+            # echoed user_message) to the user — ask the progress question.
+            return "No worries — what did you get into before stopping?"
         except json.JSONDecodeError:
             pass
     return response_text[:300] if response_text else "No worries — what did you get into before stopping?"
