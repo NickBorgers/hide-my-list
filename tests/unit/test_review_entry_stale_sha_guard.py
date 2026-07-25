@@ -22,6 +22,8 @@ _ENTRY_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "review-entry.yml"
 
 _GUARD_STEP = "Check reviewed SHA is still PR head"
 _GUARD_GATE = "steps.freshness.outputs.stale != 'true'"
+_FIXER_OWNED_STEP = "Check for fixer-owned reviewed SHA"
+_FIXER_OWNED_GATE = "steps.fixer-owned.outputs.fixer_owned_sha != 'true'"
 
 
 def _workflow_text() -> str:
@@ -79,6 +81,73 @@ def test_dedup_claim_is_gated_on_guard() -> None:
     )
 
 
+def test_fixer_owned_sha_guard_runs_before_dedup_claim() -> None:
+    """The fixer-owned SHA guard must precede the dedup claim.
+
+    A fixer's own push fires a pull_request:synchronize event for the SHA
+    the prior cycle already produced and claimed. If that event reclaims the
+    SHA after cleanup turns the claim terminal, it consumes a cycle without
+    reviewing new author content.
+    """
+    text = _workflow_text()
+    guard_pos = text.find(_FIXER_OWNED_STEP)
+    dedup_pos = text.find("SHA-keyed dedup claim")
+    assert guard_pos != -1, f"'{_FIXER_OWNED_STEP}' step not found in review-entry.yml"
+    assert dedup_pos != -1, "'SHA-keyed dedup claim' step not found"
+    assert guard_pos < dedup_pos, (
+        "The fixer-owned SHA guard must appear before the dedup claim so the "
+        "fixer's own synchronize event cannot reclaim its output SHA."
+    )
+
+
+def test_fixer_owned_sha_guard_detects_finalized_post_push_claim_history() -> None:
+    """The guard must inspect finalized status history, not only latest status.
+
+    Cleanup advances `review/pipeline` from pending to success on the
+    post-fix SHA. The original fixer claim remains in commit-status history
+    and is the durable signal that the automatic synchronize event is
+    self-generated. A verdict must also be present so a pipeline failure after
+    the push remains retryable.
+    """
+    text = _workflow_text()
+    guard_pos = text.find(_FIXER_OWNED_STEP)
+    env_pos = text.find("env:", guard_pos)
+    run_pos = text.find("run: |", guard_pos)
+    next_step_pos = text.find("\n      - name:", guard_pos + 1)
+    guard_block = text[guard_pos:next_step_pos]
+    guard_if_block = text[guard_pos:env_pos]
+    guard_run_block = text[run_pos:next_step_pos]
+
+    assert "github.event_name == 'pull_request'" in guard_if_block, (
+        "The fixer-owned SHA guard must be event-gated to automatic "
+        "`pull_request` runs so `/review` remains a force override."
+    )
+    assert 'contains("fixer post-push claim")' in guard_run_block, (
+        "Expected the fixer-owned SHA guard to search `review/pipeline` "
+        "status history for the fixer's post-push claim description."
+    )
+    assert 'context == "review/verdict"' in guard_run_block, (
+        "Expected the fixer-owned SHA guard to require a finalized "
+        "`review/verdict` status before skipping automatic re-entry."
+    )
+    assert "sort_by(.created_at)" in guard_block, (
+        "Expected the fixer-owned SHA guard to inspect commit-status history. "
+        "Checking only the latest status misses claims advanced by cleanup."
+    )
+
+
+def test_dedup_claim_is_gated_on_fixer_owned_sha() -> None:
+    """The dedup claim step must skip fixer-owned automatic re-entry."""
+    text = _workflow_text()
+    dedup_pos = text.find("SHA-keyed dedup claim")
+    gate_pos = text.find(_FIXER_OWNED_GATE, dedup_pos)
+    assert gate_pos != -1, (
+        f"Expected '{_FIXER_OWNED_GATE}' in the dedup claim step's if: "
+        "condition. Without it, the fixer's own synchronize event consumes a "
+        "fresh cycle after cleanup makes the prior claim terminal."
+    )
+
+
 def test_pipeline_job_is_gated_on_guard() -> None:
     """The pipeline job must carry a redundant stale-SHA skip.
 
@@ -90,6 +159,11 @@ def test_pipeline_job_is_gated_on_guard() -> None:
         "Expected the pipeline job's if: condition to include "
         "\"needs.resolve.outputs.stale_sha != 'true'\". Step-level gating "
         "alone leaves the dispatch reachable if the dedup gate is edited."
+    )
+    assert "needs.resolve.outputs.fixer_owned_sha != 'true'" in text, (
+        "Expected the pipeline job's if: condition to include "
+        "\"needs.resolve.outputs.fixer_owned_sha != 'true'\". Step-level "
+        "gating alone leaves the dispatch reachable if the dedup gate is edited."
     )
 
 

@@ -7,11 +7,13 @@ description: >
   SHA, the claim fails and the caller should exit early — another
   pipeline run already owns this SHA.
 
-  This is the mechanism that makes the autofix → synchronize → re-review
-  loop class structurally impossible: the fixer claims its output SHA
-  *before* publishing the push, so the synchronize event GitHub fires
-  for that push lands on an already-claimed SHA and the dedup short-
-  circuits the new run.
+  This is the first in-flight lock for the autofix → synchronize →
+  re-review loop class: the fixer claims its output SHA immediately
+  after publishing the push, so an already-queued synchronize event that
+  lands while that claim is still pending short-circuits here. If the
+  original cycle finalizes first, review-entry.yml separately skips the
+  automatic event by recognizing the finalized fixer post-push claim
+  history.
 
 inputs:
   sha:
@@ -69,12 +71,11 @@ runs:
         # /review) is allowed to re-claim and re-run, with the new
         # `pending` status overwriting the old terminal one.
         #
-        # This preserves the loop-impossibility property the design
-        # depends on: the fixer's push triggers a synchronize event
-        # that lands on the SHA the fixer just wrote `pending` for,
-        # and dedup correctly bails because that pending status was
-        # set just before the push. Two events on the same SHA still
-        # collapse via the in-flight pending lock.
+        # This preserves the in-flight lock the design depends on: the
+        # fixer's push triggers a synchronize event that lands on the SHA
+        # the fixer just wrote `pending` for, and dedup correctly bails if
+        # that claim is still active. Two events on the same SHA still
+        # collapse via the pending lock.
         EXISTING=$(gh api "repos/${REPO}/commits/${SHA}/statuses" \
           --jq "[.[] | select(.context == \"${CTX}\")] | sort_by(.created_at) | last // empty" \
           2>/dev/null || echo "")

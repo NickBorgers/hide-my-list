@@ -4,9 +4,8 @@ name: Review pipeline v2 — fixer
 # Reads every reviewer artifact, runs the agentic fixer with a NARROW
 # prompt that only addresses substantive findings the reviewers asked
 # for, then, if it produces a commit, pushes that SHA and claims it on
-# review/pipeline immediately afterward. The GO short-circuit on
-# `All Required Agent Reviews` is what prevents redundant follow-up
-# cycles on already-finalized SHAs.
+# review/pipeline immediately afterward. Entry-side GO and fixer-owned
+# SHA guards prevent redundant follow-up cycles on already-finalized SHAs.
 #
 # This is the ONLY job in the v2 pipeline that has write permission to
 # the PR branch. All reviewers and the judge are read-only.
@@ -667,10 +666,11 @@ jobs:
           # push completes.
           #
           # Push then claim. The synchronize event GitHub fires for
-          # the push takes a few seconds to schedule. The race window
-          # is bounded by the cycle counter (#374's cleanup-claim and
-          # gather's cycle cap), so worst case is a single wasted
-          # extra cycle, not an infinite loop.
+          # the push takes a few seconds to schedule. If that event
+          # un-queues while this claim is pending, entry's dedup lock
+          # skips it. If this cycle finalizes first, entry recognizes
+          # the fixer post-push claim in the SHA's status history and
+          # skips the automatic re-entry before it consumes a cycle.
           git push origin "HEAD:${HEAD_REF}"
 
           gh api -X POST "repos/${REPO}/statuses/${NEW_SHA}" \
