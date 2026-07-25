@@ -11,8 +11,8 @@ peer: "<test-peer-checkin-named>"
 inbound: "__CHECK_IN__"
 prior_state:
   active_task:
-    notion_page_id: "<placeholder-page-id>"
-    title: "<placeholder-task>"
+    page_id: "<placeholder-page-id>"
+    title: "Reorganize the pantry shelves"
     check_in_count: 0
     time_estimate: 30
   conversation_state: active
@@ -23,10 +23,15 @@ contracts:
     pattern: "\\{task\\}"
   - kind: regex_forbid
     pattern: "(?i)(this\\s+focus\\s+task|this\\s+task|your\\s+task|the\\s+task|that\\s+task)(?!\\s+is\\b)"
+  # The regex_require above asserts the literal {task} token on the raw
+  # draft body. This judge contract scores the DELIVERED body (token already
+  # substituted by the runner, mirroring send_node), so it checks the user
+  # experience: the message names the specific task.
   - kind: judge
     rubric: |
-      The check-in message contains the literal token {task} where it
-      refers to the active task — not a vague description like "this
-      focus task" or "your task". Score 1.0 if {task} appears exactly;
-      0.0 if a vague reference replaces it.
+      The check-in message refers to the active task by its specific name
+      ("Reorganize the pantry shelves" or a clear shortening of it) — not
+      a vague description like "this focus task", "your task", or "the
+      task". Score 1.0 if the task is named; 0.0 if only a vague
+      reference appears.
     threshold: 0.85

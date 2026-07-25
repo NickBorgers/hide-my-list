@@ -1,8 +1,12 @@
 ---
-# Check-in scenario: system-initiated follow-up after silence on the
-# active task. Tone must be open, no pressure, validate any answer.
+# Check-in scenario: system-initiated follow-up after repeated silence on
+# the active task. Tone must be open, no pressure, validate any answer.
 # CHECK_IN is never inferred from user messages — this fixture simulates
 # the scheduler-driven invocation.
+# check_in_count: 2 exercises the THIRD check-in, which per
+# docs/ai-prompts/check-in.md is the one that offers a graceful exit ramp
+# ("...or want to take a break?"). Earlier check-ins are a plain low-pressure
+# ping by design and must not be scored against the exit-ramp requirement.
 id: check-in-quiet-user-001
 node: check_in
 tier: medium
@@ -10,8 +14,10 @@ peer: "<test-peer-9>"
 inbound: "__CHECK_IN__"  # sentinel for scheduler-initiated
 prior_state:
   active_task:
-    notion_page_id: "<placeholder-page-id>"
-    title: "<placeholder-task>"
+    page_id: "<placeholder-page-id>"
+    title: "Sort the mail pile"
+    time_estimate: 30
+    check_in_count: 2
   conversation_state: checking_in
 contracts:
   - kind: shame_safe

@@ -10,7 +10,7 @@ inbound: "not that one"
 prior_state:
   active_task:
     page_id: "<placeholder-page-id-1>"
-    title: "<placeholder-task>"
+    title: "Reconcile the expense report"
   conversation_state: active
 # Candidate pool read via notion.query_pending(). Without this the node
 # sees an empty pool and can only offer a graceful exit, which the rubric

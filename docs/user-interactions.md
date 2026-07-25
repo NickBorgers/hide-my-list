@@ -625,13 +625,13 @@ sequenceDiagram
 
     U->>AI: "Sure, I'll do that"
     AI->>N: Update status → in_progress
-    AI->>State: Save active_task (id, title, estimate, started_at, check_in_due_at)
+    AI->>State: Save active_task (page_id, title, estimate, selected_at)
     AI->>U: "Great, it's yours. Let me know when you're done!"
 
     Note over AI,Sched: Time passes
 
-    Sched->>AI: Trigger at check_in_due_at
-    AI->>State: Load active_task + check_in_due_at
+    Sched->>AI: Trigger (10-minute interval)
+    AI->>State: Load active_task
     AI->>AI: Is check-in due?
     alt Not due / no task
         AI->>State: Optional cleanup
@@ -726,11 +726,13 @@ flowchart TD
 
 ### APScheduler Check-In Scheduling
 
-APScheduler `check_in_dispatcher` job polls every 10 minutes. On each run:
+APScheduler `check_in_dispatcher` job fires every 10 minutes. Dispatch enters
+the graph through `check_in_route`, which sets `intent = CHECK_IN`; the
+check-in module then reads state and generates the message.
 
-- **State read:** Loads `active_task` and `check_in_due_at` from LangGraph checkpoint state for the peer.
-- **Early exit:** If due time not reached, logs `CHECK_IN_SKIPPED` for observability.
-- **State fields:** `active_task.id`, `active_task.title`, `active_task.time_estimate`, `active_task.started_at`, `active_task.check_in_due_at`, `active_task.check_in_count`.
+- **State read:** Loads `active_task` from LangGraph checkpoint state for the peer.
+- **Early exit:** If `active_task` is empty, the module skips the check-in.
+- **State fields:** `active_task.page_id`, `active_task.title`, `active_task.time_estimate`, `active_task.check_in_count`, and `active_task.started_at` when present (elapsed time falls back to the estimate without it).
 
 ---
 
@@ -948,13 +950,13 @@ sequenceDiagram
     U->>AI: I have an hour, feeling focused
     AI->>U: How about working on the quarterly report? ~45 min of focus work.
     U->>AI: Sure
-    AI->>State: Save active_task (estimate 45, due_in 56 min, count 0)
+    AI->>State: Save active_task (estimate 45, count 0)
     AI->>U: Great — it's yours. Let me know when you're done!
 
     Note over AI,Sched: 56 minutes pass
 
     Sched->>AI: Trigger check_in_dispatcher
-    AI->>State: Load active_task + due time
+    AI->>State: Load active_task
     AI->>U: How's the quarterly report going? Still at it?
 
     U->>AI: Ugh, I got distracted reading emails
