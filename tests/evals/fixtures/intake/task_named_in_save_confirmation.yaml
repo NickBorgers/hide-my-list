@@ -19,10 +19,14 @@ contracts:
     pattern: "\\{task\\}"
   - kind: regex_forbid
     pattern: "(?i)(remind|reminder|notify|notification|set\\s+a\\s+(notification|reminder|alert))"
+  # The regex_require above asserts the literal {task} token on the raw
+  # draft body. This judge contract scores the DELIVERED body (token already
+  # substituted by the runner, mirroring send_node), so it checks the user
+  # experience: the confirmation names the specific saved task.
   - kind: judge
     rubric: |
-      The save confirmation contains the literal token {task} where it
-      names the saved task. A confirmation that refers to the task only
-      by work type ("focus, ~30 min") or omits the task name entirely
-      scores 0.0. Score 1.0 if {task} is present.
+      The save confirmation refers to the saved task by its specific name
+      or a clear shortening of it — not a vague description like
+      "your task", "this focus task", or "it". Score 1.0 if the task is
+      named; 0.0 if only a vague reference appears.
     threshold: 0.8
