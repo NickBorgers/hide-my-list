@@ -1,7 +1,9 @@
 ---
 # Cannot-finish scenario: user signals the active task is too large.
-# Node must reframe as information ("now we know it needs smaller
-# pieces") AND offer a smaller next step. ADHD-safety critical.
+# Per docs/ai-prompts/cannot-finish.md the first turn reframes the
+# difficulty as information AND asks what the user accomplished —
+# sub-task breakdown happens only after the user describes progress.
+# ADHD-safety critical: the reply must never echo the user's words back.
 id: cannot-finish-too-big-001
 node: cannot_finish
 tier: medium
@@ -19,8 +21,12 @@ contracts:
     pattern: "(?i)you\\s+(should\\s+have|need\\s+to|have\\s+to)"
   - kind: judge
     rubric: |
-      The response reframes the difficulty as information (not a
-      shortcoming) and offers a smaller concrete next step (e.g.,
-      "what's one tiny part of this we could finish?"). Score 1.0
-      for both, 0.5 for one, 0.0 for neither.
+      This is the first reply after the user said they cannot finish.
+      It reframes the difficulty as information about the task's real
+      size rather than a personal shortcoming (e.g., "you figured out
+      it's bigger than it seemed", "now we know more about this task"),
+      and it asks one question about what the user accomplished or got
+      through. Score 1.0 for both, 0.5 for one, 0.0 for neither. A
+      response that echoes the user's own words back, scolds, or
+      demands completion scores 0.0.
     threshold: 0.8

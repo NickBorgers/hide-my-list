@@ -41,7 +41,6 @@ STEP 3: Create sub-tasks for remaining work
 OUTPUT (JSON):
 {
   "phase": "ask_progress" | "analyze_remaining",
-  "user_message": "...",
   "progress_question": "..." (if phase=ask_progress),
   "completed_portion": "..." (if phase=analyze_remaining),
   "remaining_sub_tasks": [
@@ -53,6 +52,10 @@ OUTPUT (JSON):
   ] (if phase=analyze_remaining),
   "next_sub_task_message": "..." (offer first remaining sub-task)
 }
+
+The user sees ONLY progress_question or next_sub_task_message — the full
+shame-safe reply lives in that field. No field ever repeats the user's
+message back; legacy non-user-facing echo fields are ignored rather than sent.
 ```
 
 ### Progress Question Templates (Shame-Safe)
