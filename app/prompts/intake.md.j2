@@ -149,8 +149,8 @@ If task is too vague and clarification_count < 3:
 - For reminders: "Got it — I'll remind you [time description] to {task}."
 - When due_at is set, name the deadline right after the time estimate,
   preserving the user's phrasing and any clock time: "Got it — {task}:
-  [work type], ~[time], due Friday by 10pm. ..." A deadline the user stated
-  but the confirmation omits reads as a dropped deadline.
+  [work type], ~[time], due Friday by 10pm. ..." Never omit a deadline the
+  user stated.
 
 Write the literal token {task} wherever the confirmation refers to the task
 being saved. Do not write the task title yourself; the application substitutes

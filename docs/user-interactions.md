@@ -625,7 +625,7 @@ sequenceDiagram
 
     U->>AI: "Sure, I'll do that"
     AI->>N: Update status → in_progress
-    AI->>State: Save active_task (id, title, estimate, started_at, check_in_due_at)
+    AI->>State: Save active_task (page_id, title, estimate, started_at, check_in_due_at)
     AI->>U: "Great, it's yours. Let me know when you're done!"
 
     Note over AI,Sched: Time passes
@@ -730,7 +730,7 @@ APScheduler `check_in_dispatcher` job polls every 10 minutes. On each run:
 
 - **State read:** Loads `active_task` and `check_in_due_at` from LangGraph checkpoint state for the peer.
 - **Early exit:** If due time not reached, logs `CHECK_IN_SKIPPED` for observability.
-- **State fields:** `active_task.id`, `active_task.title`, `active_task.time_estimate`, `active_task.started_at`, `active_task.check_in_due_at`, `active_task.check_in_count`.
+- **State fields:** `active_task.page_id`, `active_task.title`, `active_task.time_estimate`, `active_task.started_at`, `active_task.check_in_due_at`, `active_task.check_in_count`.
 
 ---
 

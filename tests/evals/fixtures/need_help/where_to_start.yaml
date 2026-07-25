@@ -14,6 +14,12 @@ prior_state:
 contracts:
   - kind: shame_safe
     threshold: 0.85
+  # The need_help prompt requires the literal {task} token wherever the
+  # reply refers to the current task; send_node substitutes the stored
+  # title. Asserted on the raw draft body. Without the token, send_node
+  # appends a stilted "The task is: X." sentence instead.
+  - kind: regex_require
+    pattern: "\\{task\\}"
   - kind: judge
     rubric: |
       The response gives between 1 and 3 concrete first-step

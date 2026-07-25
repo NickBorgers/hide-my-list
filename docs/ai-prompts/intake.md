@@ -299,8 +299,8 @@ CONFIRMATION MESSAGE FORMAT:
 - For reminders: "Got it — I'll remind you Wednesday evening to {task}."
 - When due_at is set, the confirmation names the deadline right after the
   time estimate, preserving the user's phrasing and any clock time: "Got it —
-  {task}: [work type], ~[time], due Friday by 10pm. ..." A deadline the user
-  stated but the confirmation omits reads as a dropped deadline.
+  {task}: [work type], ~[time], due Friday by 10pm. ..." Never omit a deadline
+  the user stated.
 
 The module writes the literal token `{task}` where the confirmation names the
 task being saved; the application substitutes the exact title it stored in

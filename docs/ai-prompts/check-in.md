@@ -32,7 +32,7 @@ sequenceDiagram
 When user accepts task:
 - Update Notion `Started At` to current timestamp.
 - Write `active_task` to checkpoint state:
-  - `id`, `title`, `time_estimate`, `energy`
+  - `page_id`, `title`, `time_estimate`, `energy_required`
   - `started_at` (ISO 8601, UTC)
   - `check_in_due_at` = `started_at + time_estimate × 1.25`
   - `check_in_count` = 0
