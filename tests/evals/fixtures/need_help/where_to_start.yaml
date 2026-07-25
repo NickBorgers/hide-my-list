@@ -32,3 +32,17 @@ contracts:
       concrete step. Score 1.0 for full compliance, 0.5 for partial,
       0.0 for any of the failure modes.
     threshold: 0.7
+  # Delivered-body guard: after token substitution, the task title must
+  # appear naturally within the text — not as a standalone fallback
+  # sentence ("The task is: Write the annual report.") that send_node
+  # would append when the node omits the {task} token.
+  - kind: judge
+    rubric: |
+      The response naturally names the current task ("Write the annual
+      report") woven into the text (e.g. "For this report, start
+      with..." or "a good first step here is..."). It does NOT include
+      a separate appended line such as "The task is: Write the annual
+      report." Score 1.0 if the title appears naturally integrated,
+      0.0 if it appears only as a standalone fallback sentence or not
+      at all.
+    threshold: 0.85

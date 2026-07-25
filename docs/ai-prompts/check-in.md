@@ -34,17 +34,21 @@ When the user accepts a task, the selection module marks the Notion task
 - `page_id`, `title`, `status`
 - `selected_at` (ISO 8601, UTC)
 - `work_type`, `urgency`, `time_estimate`, `energy_required`, `rejection_count`
+- `check_in_due_at` (UTC ISO 8601; null until first check-in is scheduled)
+- `check_in_count` (integer; 0 at task start)
+- `started_at` (ISO 8601, UTC; elapsed-time baseline)
 
 `conversation_state` is set to `"active"`.
 
 **Check-in invocation:** check-ins are system-initiated only. The scheduler's
-`check_in_dispatcher` job fires every 10 minutes; system-initiated turns enter
-the graph through `check_in_route`, which sets `intent = CHECK_IN` so the
-graph routes to this module. If `active_task` is empty, the module skips the
-check-in. Otherwise it generates the message from `active_task` (`title`,
-`time_estimate`, `check_in_count`, and `started_at` when present — elapsed
-time falls back to the estimate without it), increments `check_in_count`, and
-sets `conversation_state = "checking_in"`.
+`check_in_dispatcher` job fires every 10 minutes, loads `active_task`, and
+exits unless `active_task.check_in_due_at` is set and due. When due,
+system-initiated turns enter the graph through `check_in_route`, which sets
+`intent = CHECK_IN` so the graph routes to this module. The module generates
+the message from `active_task` (`title`, `time_estimate`, `check_in_count`,
+and `started_at` when present — elapsed time falls back to the estimate
+without it), increments `check_in_count`, sets the next `check_in_due_at`,
+and sets `conversation_state = "checking_in"`.
 
 ### Check-In Prompt
 
