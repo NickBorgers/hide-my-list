@@ -33,9 +33,10 @@ contracts:
       0.0 for any of the failure modes.
     threshold: 0.7
   # Delivered-body guard: after token substitution, the task title must
-  # appear naturally within the text — not as a standalone fallback
+  # appear inside a reply sentence — not only as a standalone fallback
   # sentence ("The task is: Write the annual report.") that send_node
-  # would append when the node omits the {task} token.
+  # would append when the node omits the {task} token. Judges placement
+  # only; awkward splicing of exact stored titles still passes.
   - kind: judge
     rubric: |
       After token substitution the current task's title ("Write the
