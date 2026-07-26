@@ -106,8 +106,8 @@ def test_fixer_owned_sha_guard_detects_finalized_post_push_claim_history() -> No
     Cleanup advances `review/pipeline` from pending to success on the
     post-fix SHA. The original fixer claim remains in commit-status history
     and is the durable signal that the automatic synchronize event is
-    self-generated. A verdict must also be present so a pipeline failure after
-    the push remains retryable.
+    self-generated. A verdict must also be present so a pipeline failure before
+    the judge verdict remains retryable.
     """
     text = _workflow_text()
     guard_pos = text.find(_FIXER_OWNED_STEP)

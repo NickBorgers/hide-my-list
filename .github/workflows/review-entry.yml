@@ -290,9 +290,9 @@ jobs:
       # (`pipeline run completed (post-fix)`), so pending-only dedup would
       # allow the fixer's own SHA to enter as a new countable cycle.
       #
-      # Treat the fixer's post-push claim plus a finalized verdict as durable
+      # Treat the fixer's post-push claim plus a judge verdict as durable
       # ownership of this event SHA for automatic PR events. Requiring the
-      # verdict keeps a pipeline failure after push-but-before-finalize
+      # verdict keeps a pipeline failure before judge writes `review/verdict`
       # retryable. Human `/review` comments bypass this guard just like they
       # bypass the GO short-circuit.
       - name: Check for fixer-owned reviewed SHA

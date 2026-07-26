@@ -668,9 +668,10 @@ jobs:
           # Push then claim. The synchronize event GitHub fires for
           # the push takes a few seconds to schedule. If that event
           # un-queues while this claim is pending, entry's dedup lock
-          # skips it. If this cycle finalizes first, entry recognizes
-          # the fixer post-push claim in the SHA's status history and
-          # skips the automatic re-entry before it consumes a cycle.
+          # skips it. If this cycle reaches a judge verdict first,
+          # entry recognizes the fixer post-push claim in the SHA's
+          # status history and skips the automatic re-entry before it
+          # consumes a cycle.
           git push origin "HEAD:${HEAD_REF}"
 
           gh api -X POST "repos/${REPO}/statuses/${NEW_SHA}" \

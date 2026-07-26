@@ -11,9 +11,9 @@ description: >
   re-review loop class: the fixer claims its output SHA immediately
   after publishing the push, so an already-queued synchronize event that
   lands while that claim is still pending short-circuits here. If the
-  original cycle finalizes first, review-entry.yml separately skips the
-  automatic event by recognizing the finalized fixer post-push claim
-  history.
+  original cycle reaches a judge verdict first, review-entry.yml
+  separately skips the automatic event by recognizing the finalized
+  fixer post-push claim history.
 
 inputs:
   sha:
