@@ -147,6 +147,7 @@ jobs:
       base_sha: ${{ steps.resolve.outputs.base_sha }}
       terminal_verdict: ${{ steps.terminal.outputs.terminal_verdict }}
       stale_sha: ${{ steps.freshness.outputs.stale }}
+      fixer_owned_sha: ${{ steps.fixer-owned.outputs.fixer_owned_sha }}
     steps:
       - name: Checkout main (for composite actions)
         uses: actions/checkout@v4
@@ -281,12 +282,51 @@ jobs:
             echo "terminal_verdict=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The fixer pushes a commit, then immediately claims that output SHA
+      # with `review/pipeline` because GitHub cannot status-check an
+      # unpublished commit. The push still emits a pull_request:synchronize
+      # event. If that event un-queues after the original cycle has already
+      # finalized, the latest `review/pipeline` status may be terminal
+      # (`pipeline run completed (post-fix)`), so pending-only dedup would
+      # allow the fixer's own SHA to enter as a new countable cycle.
+      #
+      # Treat the fixer's post-push claim plus a judge verdict as durable
+      # ownership of this event SHA for automatic PR events. Requiring the
+      # verdict keeps a pipeline failure before judge writes `review/verdict`
+      # retryable. Human `/review` comments bypass this guard just like they
+      # bypass the GO short-circuit.
+      - name: Check for fixer-owned reviewed SHA
+        id: fixer-owned
+        if: |
+          steps.resolve.outputs.reviewed_sha != '' &&
+          steps.freshness.outputs.stale != 'true' &&
+          steps.terminal.outputs.terminal_verdict != 'true' &&
+          github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.resolve.outputs.reviewed_sha }}
+        run: |
+          set -euo pipefail
+          FIXER_CLAIM=$(gh api "repos/${REPO}/commits/${SHA}/statuses" \
+            --jq '[.[] | select(.context == "review/pipeline" and ((.description // "") | contains("fixer post-push claim")))] | sort_by(.created_at) | last | .description // empty')
+          FIXER_VERDICT=$(gh api "repos/${REPO}/commits/${SHA}/statuses" \
+            --jq '[.[] | select(.context == "review/verdict")] | sort_by(.created_at) | last | .description // empty')
+          if [ -n "$FIXER_CLAIM" ] && [ -n "$FIXER_VERDICT" ]; then
+            echo "review-entry: SHA ${SHA} was produced by the fixer and already finalized as ${FIXER_VERDICT} (${FIXER_CLAIM}); skipping automatic re-entry (human override: post /review)"
+            echo "fixer_owned_sha=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "review-entry: SHA ${SHA} has no finalized fixer post-push claim; proceeding"
+            echo "fixer_owned_sha=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: SHA-keyed dedup claim
         id: dedup
         if: |
           steps.resolve.outputs.reviewed_sha != '' &&
           steps.freshness.outputs.stale != 'true' &&
-          steps.terminal.outputs.terminal_verdict != 'true'
+          steps.terminal.outputs.terminal_verdict != 'true' &&
+          steps.fixer-owned.outputs.fixer_owned_sha != 'true'
         uses: ./.github/actions/review-dedup
         with:
           sha: ${{ steps.resolve.outputs.reviewed_sha }}
@@ -306,7 +346,8 @@ jobs:
       needs.authorize.outputs.authorized == 'true' &&
       needs.resolve.outputs.should_run == 'true' &&
       needs.resolve.outputs.stale_sha != 'true' &&
-      needs.resolve.outputs.terminal_verdict != 'true'
+      needs.resolve.outputs.terminal_verdict != 'true' &&
+      needs.resolve.outputs.fixer_owned_sha != 'true'
     uses: ./.github/workflows/review-pipeline.yml
     with:
       pr_number: ${{ needs.resolve.outputs.pr_number }}
