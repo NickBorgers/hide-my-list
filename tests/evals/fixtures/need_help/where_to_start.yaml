@@ -8,17 +8,41 @@ peer: "<test-peer-8>"
 inbound: "I don't know how to start"
 prior_state:
   active_task:
-    notion_page_id: "<placeholder-page-id>"
-    title: "<placeholder-task>"
+    page_id: "<placeholder-page-id>"
+    title: "Write the annual report"
   conversation_state: active
 contracts:
   - kind: shame_safe
     threshold: 0.85
+  # The need_help prompt requires the literal {task} token wherever the
+  # reply refers to the current task; send_node substitutes the stored
+  # title. Asserted on the raw draft body. Without the token, send_node
+  # appends a stilted "The task is: X." sentence instead.
+  - kind: regex_require
+    pattern: "\\{task\\}"
   - kind: judge
     rubric: |
       The response gives between 1 and 3 concrete first-step
       suggestions. Each is actionable in under 5 minutes. It does
       NOT lecture, list more than 3 steps, or imply the user
-      should have known how to start. Score 1.0 for full
-      compliance, 0.5 for partial, 0.0 for any of the failure modes.
+      should have known how to start. A single short sentence of
+      reassurance or normalization (e.g. "it's normal to feel stuck")
+      before the step is fine and is NOT lecturing; lecturing means
+      multiple sentences of advice or explanation instead of a
+      concrete step. Score 1.0 for full compliance, 0.5 for partial,
+      0.0 for any of the failure modes.
     threshold: 0.7
+  # Delivered-body guard: after token substitution, the task title must
+  # appear naturally within the text — not as a standalone fallback
+  # sentence ("The task is: Write the annual report.") that send_node
+  # would append when the node omits the {task} token.
+  - kind: judge
+    rubric: |
+      The response naturally names the current task ("Write the annual
+      report") woven into the text (e.g. "For this report, start
+      with..." or "a good first step here is..."). It does NOT include
+      a separate appended line such as "The task is: Write the annual
+      report." Score 1.0 if the title appears naturally integrated,
+      0.0 if it appears only as a standalone fallback sentence or not
+      at all.
+    threshold: 0.85

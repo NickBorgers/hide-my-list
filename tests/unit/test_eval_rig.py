@@ -93,3 +93,49 @@ def test_invoke_node_rejects_exception_fallback_output() -> None:
     fixture = _fixture("rejection-names-alternative-001")
     with pytest.raises(RuntimeError, match="exception fallback path"):
         _invoke_node("rejection", fixture)
+
+
+def test_evaluate_contracts_scores_regex_raw_and_judge_delivered(monkeypatch) -> None:
+    """regex_* score the raw draft body; judge/shame_safe score the delivered body.
+
+    The token invariant ("the model wrote {task}") is only assertable on the
+    raw body, while a judge reading the raw body dings the token as an
+    unfilled placeholder — each surface exists for the contract kinds that
+    need it.
+    """
+    from tests.evals import judge as judge_mod
+    from tests.evals.runner import Contract, evaluate_contracts
+
+    judged_surfaces: list[str] = []
+
+    def _fake_score(*, rubric: str, response: str, **_kwargs):
+        judged_surfaces.append(response)
+        return judge_mod.JudgeResult(score=1.0, reasoning="ok", from_cache=False)
+
+    monkeypatch.setattr(judge_mod, "score", _fake_score)
+
+    raw = "How's {task} going?"
+    delivered = "How's Sort the mail pile going?"
+    contracts = [
+        Contract(kind="regex_require", spec={"pattern": r"\{task\}"}),
+        Contract(kind="judge", spec={"rubric": "names the task", "threshold": 0.7}),
+        Contract(kind="shame_safe", spec={"threshold": 0.8}),
+    ]
+    results = evaluate_contracts(contracts, raw, delivered)
+
+    assert [r.passed for r in results] == [True, True, True]
+    assert judged_surfaces == [delivered, delivered]
+
+
+def test_invoke_node_injects_fresh_selected_at_for_complete() -> None:
+    """A fixture active_task without selected_at must still be active.
+
+    complete_node treats a missing selected_at as "no active task" (24h
+    TTL) and asks which task was meant — a static fixture can never carry
+    a fresh timestamp, so the runner injects run-time now. complete_node
+    makes no LLM call, so this runs end-to-end in the unit environment.
+    """
+    fixture = _fixture("complete-done-001")
+    body, _title = _invoke_node("complete", fixture)
+    assert body
+    assert "which task did you mean" not in body.lower()

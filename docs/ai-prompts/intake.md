@@ -297,6 +297,10 @@ CONFIRMATION MESSAGE FORMAT:
 - For inline steps: "Got it — {task}: [work type], ~[time]. Here's your plan: 1) X, 2) Y, 3) Z"
 - For hidden sub-tasks: "Got it — {task}: [work type], ~[time]. First step: [step]. This is 1 of [N] steps."
 - For reminders: "Got it — I'll remind you Wednesday evening to {task}."
+- When due_at is set, the confirmation names the deadline right after the
+  time estimate, preserving the user's phrasing and any clock time: "Got it —
+  {task}: [work type], ~[time], due Friday by 10pm. ..." Never omit a deadline
+  the user stated.
 
 The module writes the literal token `{task}` where the confirmation names the
 task being saved; the application substitutes the exact title it stored in

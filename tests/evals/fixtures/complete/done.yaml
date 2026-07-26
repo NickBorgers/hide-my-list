@@ -1,6 +1,9 @@
 ---
 # Complete scenario: user finishes the active task. Reward must be
 # celebratory but proportionate. No internal narration.
+# active_task uses the real State shape (page_id, not notion_page_id) so
+# complete_node can resolve the completion target; the runner injects a
+# fresh selected_at so the task is within the 24h active-task TTL.
 id: complete-done-001
 node: complete
 tier: cheap
@@ -8,8 +11,11 @@ peer: "<test-peer-10>"
 inbound: "done!"
 prior_state:
   active_task:
-    notion_page_id: "<placeholder-page-id>"
-    title: "<placeholder-task>"
+    page_id: "<placeholder-page-id>"
+    title: "Fold the laundry"
+    work_type: "independent"
+    energy_required: "Low"
+    time_estimate: 20
   streak: 3
   tasks_completed_today: 2
   conversation_state: active

@@ -99,8 +99,12 @@ flowchart TD
 |-------|----------|
 | Overview | "Here's the plan: 1) X (5 min), 2) Y (10 min), 3) Z (5 min). Ready to start with X?" |
 | Current Step | "Right now, focus on just this: [specific action]. That's it for now." |
-| Micro-Action | "Don't worry about the whole thing. Just do this one tiny thing: [micro-action]" |
+| Micro-Action | "Don't worry about all of {task} right now. Just do this one tiny thing: [micro-action]" |
 | Hand-Holding | "Here's exactly what to do: Open [app]. Click [button]. Type [specific text]. Done!" |
+
+The module writes the literal token `{task}` where the message refers to the
+current task; the application substitutes the exact stored title before
+delivery, so the reply always names the task the user is stuck on.
 
 ### Example Assistance Flows
 
