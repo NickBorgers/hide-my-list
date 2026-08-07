@@ -980,6 +980,34 @@ class TestRewardFeedback:
         }
 
     @pytest.mark.asyncio
+    async def test_explicit_empty_user_prefs_wins_over_stored(self) -> None:
+        """An explicit empty dict short-circuits the lookup — {} is a valid override."""
+        from app.tools import rewards as rewards_module
+
+        prefs_mock = AsyncMock(return_value={"preferred_styles": ["stored style"]})
+        image_mock = AsyncMock(return_value=_fake_image())
+
+        with (
+            patch.object(rewards_module, "load_reward_prefs", new=prefs_mock),
+            patch.object(rewards_module, "load_feedback_history", new=AsyncMock(return_value=[])),
+            patch.object(rewards_module, "generate_reward_image", new=image_mock),
+            patch.object(rewards_module, "write_reward_manifest", new=AsyncMock(return_value=uuid.uuid4())),
+            patch.object(rewards_module, "compute_intensity", return_value=("high", 70)),
+        ):
+            await rewards_module.maybe_reward(
+                peer="<test-peer-20b>",
+                task_title="Placeholder task title",
+                notion_page_id="<page-id-020b>",
+                streak=3,
+                energy_required="High",
+                time_estimate=45,
+                user_prefs={},
+            )
+
+        prefs_mock.assert_not_awaited()
+        assert image_mock.await_args.kwargs["user_prefs"] is None
+
+    @pytest.mark.asyncio
     async def test_maybe_reward_continues_if_prefs_lookup_raises(self) -> None:
         """A preferences failure must not block reward delivery."""
         from app.tools import rewards as rewards_module

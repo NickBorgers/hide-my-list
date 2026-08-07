@@ -335,31 +335,28 @@ When the task classifier detects a private or shame-heavy completion (therapy, m
 
 #### Reward Preference Schema
 
-Canonical reward image preferences live in `user_prefs.rewards` (Postgres):
+Canonical reward image preferences live under key `rewards` in `user_prefs.prefs_json` (Postgres JSONB):
 
 ```json
 {
-  "user_preferences": {
-    "rewards": {
-      "preferred_styles": ["storybook watercolor", "paper collage illustration"],
-      "preferred_palettes": ["cozy pastel glow", "aurora jewel tones"],
-      "favorite_subjects": ["space", "cats", "nature"],
-      "avoid": ["medical literal", "spiders"],
-      "humor_level": "playful"
-    }
-  }
+  "preferred_styles": ["storybook watercolor", "paper collage illustration"],
+  "preferred_palettes": ["cozy pastel glow", "aurora jewel tones"],
+  "avoid": ["medical literal", "spiders"],
+  "humor_level": "playful"
 }
 ```
+
+This object is what `load_reward_prefs` returns — it is the value of `prefs_json -> 'rewards'`, not a column of its own.
 
 Supported preference dimensions:
 
 - **Styles** - e.g. watercolor, collage, 3D, graphic illustration
 - **Palettes** - warm, pastel, jewel-tone, neon, nature-led
-- **Subjects** - space, animals, nature, abstract, cozy
 - **Avoid list** - tags or vibes to suppress
 - **Humor level** - `subtle`, `playful`, or `maximal`
+- **Subjects** (`favorite_subjects`) - deferred; field is accepted in storage but no runtime code reads it yet
 
-**How preferences reach image generation:** `maybe_reward` loads the profile with `load_reward_prefs(peer)`, which reads `prefs_json -> 'rewards'` for that peer. A caller may pass preferences explicitly instead, in which case the argument wins and no lookup happens; no caller in the graph does, so the stored profile is what runs in production. Preferences are read from Postgres at reward time rather than carried in LangGraph State, because State is the checkpoint unit — a copy living there would be persisted per conversation thread and drift from the table on every edit.
+**How preferences reach image generation:** `maybe_reward` loads the profile with `load_reward_prefs(peer)`, which reads `prefs_json -> 'rewards'` for that peer. A caller may pass preferences explicitly via the `user_prefs` argument instead — any non-`None` value (including `{}`) wins and no lookup happens; no caller in the graph passes this argument, so the stored profile is what runs in production. Preferences are read from Postgres at reward time rather than carried in LangGraph State, because State is the checkpoint unit — a copy living there would be persisted per conversation thread and drift from the table on every edit.
 
 The lookup fails open: a missing row, a missing or wrongly-typed `rewards` subtree, or a database error all yield an empty profile and neutral generation. A preferences failure never blocks a reward.
 
