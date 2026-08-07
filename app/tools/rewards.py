@@ -308,8 +308,9 @@ def _select_theme(
 
     Candidates are the intensity's theme pool crossed with the user's preferred
     styles and palettes (when set). Each candidate is weighted by
-    apply_feedback_weight(), which decays over 30 days and is capped at +/-0.5 —
-    so feedback nudges selection without ever locking it to one theme. Novelty
+    apply_feedback_weight(), whose influence halves every 45 days and whose
+    total nudge is capped at +/-0.5 — so feedback nudges selection without ever
+    locking it to one theme. Novelty
     is a hard requirement of docs/reward-system.md, so every candidate keeps a
     non-zero chance of being selected.
 
@@ -653,6 +654,26 @@ async def generate_weekly_recap(
 # docs/reward-system.md:361-445
 # ---------------------------------------------------------------------------
 
+# How far back load_feedback_history() reads, and how fast a rating inside that
+# window loses influence. These two must stay consistent: a window wider than
+# the decay reach loads rows that can never matter, and a decay reach wider than
+# the window silently truncates ratings that should still count. Exponential
+# decay has no hard edge, so the window is the only cutoff.
+_FEEDBACK_WINDOW_DAYS = 90
+_FEEDBACK_HALF_LIFE_DAYS = 45.0
+
+
+def _feedback_decay(age_days: float) -> float:
+    """Return the influence multiplier for a rating `age_days` old.
+
+    Exponential with a 45-day half-life: a rating is worth 1.0 the day it is
+    given, 0.5 at 45 days, and 0.25 at the 90-day edge of the load window.
+    Negative ages (clock skew between the DB and this process) clamp to 0 so a
+    future-dated row can never outweigh a fresh one.
+    """
+    return float(0.5 ** (max(age_days, 0.0) / _FEEDBACK_HALF_LIFE_DAYS))
+
+
 def apply_feedback_weight(
     feedback_history: list[dict[str, Any]],
     theme_family: str,
@@ -661,8 +682,8 @@ def apply_feedback_weight(
 ) -> float:
     """Compute a selection weight for a theme/style/palette based on feedback history.
 
-    Implements bounded feedback weighting: recent reactions decay over time,
-    aggregate weights are capped, result is a nudge not a dictate.
+    Implements bounded feedback weighting: reaction influence halves every 45
+    days, aggregate weights are capped, result is a nudge not a dictate.
 
     Args:
         feedback_history: List of dicts with keys: score (int), theme_family (str),
@@ -703,17 +724,16 @@ def apply_feedback_weight(
         if match_weight == 0:
             continue
 
-        # Time decay: entries older than 30 days have 0 effect
+        # Time decay: influence halves every _FEEDBACK_HALF_LIFE_DAYS.
         try:
             entry_ts = datetime.fromisoformat(entry_ts_str.replace("Z", "+00:00"))
-            age_days = (now - entry_ts).days
-        except (ValueError, TypeError):
-            age_days = 30
+            age_days = (now - entry_ts).total_seconds() / 86400.0
+        except (ValueError, TypeError, AttributeError):
+            # Unparseable timestamp: treat as maximally old rather than dropping
+            # it, so a malformed row degrades to negligible influence.
+            age_days = float(_FEEDBACK_WINDOW_DAYS)
 
-        if age_days >= 30:
-            continue
-
-        decay = 1.0 - (age_days / 30.0)
+        decay = _feedback_decay(age_days)
 
         # Contribution: score ∈ {-1, 0, 1} × match × decay
         contribution = score * match_weight * decay
@@ -819,8 +839,13 @@ async def record_reward_feedback(
         return False
 
 
-async def load_feedback_history(peer: str, days: int = 90) -> list[dict[str, Any]]:
+async def load_feedback_history(
+    peer: str, days: int = _FEEDBACK_WINDOW_DAYS
+) -> list[dict[str, Any]]:
     """Load recent reward feedback for prompt personalization.
+
+    The default window is _FEEDBACK_WINDOW_DAYS so it cannot drift away from the
+    decay curve in apply_feedback_weight().
 
     Returns an empty list on DB failure so reward delivery can proceed with
     neutral generation.
