@@ -340,12 +340,11 @@ Each intensity level has 5+ theme candidates. Selection is weighted by preferenc
 
 #### Sensitive Task Guardrail
 
-When the task classifier detects a private or shame-heavy completion (therapy, medical, legal, financial, or private admin work), reward generation switches to a stricter mode:
+When the task classifier detects a private or shame-heavy completion (therapy, medical, legal, financial, or private admin work), image generation is skipped entirely:
 
-- the task is not classified into a motif at all — its title is sent to no model, and the imagery carries no readable connection to what the task was
-- theme/style/palette chosen only from calm abstract-or-symbolic allowlists, which ignore both the user's style preferences and any motif affinity
-- humor forced to `subtle`
-- literal task artifacts, mascots, animal scenes, paperwork, money, medical tools, and joke imagery excluded
+- the task is not classified into a motif — its title is sent to no model
+- image generation is not called; there is no abstract fallback image
+- the user receives muted emoji text only, consistent with the Reward Delivery Contract
 
 #### Reward Preference Schema
 
@@ -469,9 +468,7 @@ Fallback writes suggestion to `.txt` file (instead of `.png`) and exits successf
 | Variable | Purpose |
 |----------|---------|
 | `OPENAI_API_KEY` | OpenAI API authentication for image generation |
-| `REWARD_STATE_FILE` | Optional override for where reward preferences are loaded from |
-| `REWARD_WORK_TYPE` | Optional task context used to shape composition |
-| `REWARD_ENERGY_LEVEL` | Optional task context used to tune intensity and gentleness |
+| `REWARD_ARTIFACTS_DIR` | Directory for storing generated reward images (default: `/tmp/reward_artifacts`) |
 
 #### Image Archive & Collection
 
@@ -993,8 +990,6 @@ Capabilities exposed via conversation commands. The app graph handles these dire
 |----------|---------|---------|
 | `OPENAI_API_KEY` | OpenAI API for image generation | `sk-proj-xxxxxxxx` |
 | `DATABASE_URL` | Postgres connection string; reward prefs loaded from `user_prefs` table | `postgresql://hml:hml@postgres:5432/hml` |
-| `REWARD_WORK_TYPE` | Optional work type hint for reward imagery | `focus` |
-| `REWARD_ENERGY_LEVEL` | Optional energy hint for reward imagery | `low` |
 | `TWILIO_ACCOUNT_SID` | Twilio authentication | `ACxxxxxxxx` |
 | `TWILIO_AUTH_TOKEN` | Twilio authentication | `xxxxxxxx` |
 | `TWILIO_PHONE_NUMBER` | Sender phone number | `+1234567890` |

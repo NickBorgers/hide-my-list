@@ -717,6 +717,10 @@ async def generate_reward_image(
     if not task_descriptions:
         log.info("generate_reward_image.no_usable_descriptions")
 
+    # Normalize before any log: an off-vocabulary value would be a raw task-derived
+    # string (private data). Known keys are generic vocabulary — safe to log.
+    motif = motif if motif in _MOTIFS else ""
+
     _img_gen_start = time.monotonic()
     log.info(
         "image_gen.start",

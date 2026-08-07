@@ -1078,6 +1078,57 @@ class TestPrivateDataDiscipline:
             )
 
 
+
+    def test_generate_reward_image_unknown_motif_not_logged(self) -> None:
+        """An off-vocabulary motif must not appear in any log field.
+
+        After normalization, an unknown caller-supplied motif is dropped to "".
+        This guards the log boundary: a task title that somehow reached this
+        parameter would not leak into structlog fields.
+        """
+        import asyncio
+        import base64
+        import tempfile
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
+
+        from app.tools.rewards import generate_reward_image
+
+        unknown_motif = "zzunknownmotifsentinelzz"
+
+        fake_b64 = base64.b64encode(b"fake-image-bytes").decode()
+        fake_image = _MagicMock()
+        fake_image.b64_json = fake_b64
+        fake_response = _MagicMock()
+        fake_response.data = [fake_image]
+
+        mock_client = _MagicMock()
+        mock_client.images = _MagicMock()
+        mock_client.images.generate = _AsyncMock(return_value=fake_response)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "REWARD_ARTIFACTS_DIR": tmpdir}):
+                with patch("app.tools.rewards.log") as mock_log:
+                    with patch("openai.AsyncOpenAI", _MagicMock(return_value=mock_client)):
+                        asyncio.run(
+                            generate_reward_image(
+                                intensity="medium",
+                                streak_count=1,
+                                task_descriptions=["Placeholder task"],
+                                motif=unknown_motif,
+                            )
+                        )
+
+        all_logged: list[str] = []
+        for call in mock_log.info.call_args_list + mock_log.warning.call_args_list:
+            for v in list(call.args) + list(call.kwargs.values()):
+                if isinstance(v, str):
+                    all_logged.append(v)
+
+        assert not any(unknown_motif in v for v in all_logged), (
+            "Off-vocabulary motif must not appear in any log field after normalization"
+        )
+
 # ---------------------------------------------------------------------------
 # Task motif classification and image relevance
 # docs/reward-system.md: Prompt Personalization Pipeline
