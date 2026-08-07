@@ -283,6 +283,14 @@ Reward prompts are built from three layers:
 
 **Why style and palette ignore intensity:** scoping them per intensity would quarter the rate at which observations accumulate, on the two axes that are capable of learning at all. Sharing one vocabulary across intensities pools that evidence. The theme string and the prompt's mood line carry the intensity semantics instead, so an unexpected style pairing stays tonally anchored.
 
+**Where the vocabularies live.** The seed vocabularies are constants in `app/tools/rewards.py`. On a peer's first image reward they are copied into the `reward_theme_pool` table (migration 0012), keyed by peer, and selection reads from there afterward — so a peer's vocabulary can grow and retire independently of what shipped in the repo. Theme rows are scoped to an intensity; style and palette rows carry no intensity, matching the shared-vocabulary design above.
+
+Retirement is a soft delete: a retired row stops appearing in selection but keeps its rating attribution, and can be resurrected. Nothing is ever deleted.
+
+The table is an enhancement, not a precondition. Seeding failure, an unreachable database, and a vocabulary missing any axis all fall back to the seed constants. A partial vocabulary is refused outright rather than used, because a half-loaded axis would silently narrow selection — the failure this design exists to prevent. `reward_theme_pool.value` is embedded verbatim into the image prompt, so it passes `_sanitize_descriptor` before storage and should be treated as user-influenced text in ops queries.
+
+**Sensitive-task rewards never read this table.** Their allowlist stays a code constant and `_select_theme` returns before any vocabulary lookup, so that path cannot be steered by stored content however it got there. This is structural, not a filter.
+
 **Vocabulary size is a budget, not a feature.** Separating a liked descriptor from a disliked one takes roughly 40 ratings for that descriptor. At this system's volume that is reachable over a season only while the style and palette vocabularies stay around eight entries each. Every value added dilutes per-value evidence linearly, so growth is deliberate and bounded rather than open-ended. Repetition is addressed by recombination, not by longer lists.
 
 Task descriptions are private. They are passed to the image-generation call for metadata and sensitivity classification, but `_build_image_prompt()` does not embed task text into the prompt. The prompt is assembled from the selected theme-family, style, palette, streak marker count, humor level, and feedback guidance only. Generic progress imagery is used regardless of whether task text is available.

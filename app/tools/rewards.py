@@ -545,6 +545,7 @@ def _select_theme(
     sensitive_task: bool = False,
     user_prefs: dict[str, Any] | None = None,
     feedback_history: list[dict[str, Any]] | None = None,
+    vocabulary: dict[str, list[str]] | None = None,
 ) -> dict[str, str]:
     """Pick a theme/style/palette, biased by prior emoji-reaction feedback.
 
@@ -554,14 +555,19 @@ def _select_theme(
     not replace it, because a single stated style would otherwise appear on
     every image and remove style novelty entirely.
 
+    `vocabulary` is the peer's stored descriptor set when one is available.
+    Omitted or None falls back to the seed constants, so selection keeps
+    working when the database does not.
+
     Returns a dict with theme_family / style / palette keys.
     """
     history = feedback_history or []
 
     if sensitive_task:
         # The guardrail allowlist wins outright: fixed triples, no preferences,
-        # no feedback weighting, and — by returning here — no vocabulary
-        # lookup of any kind. Sensitive rewards cannot be steered.
+        # no feedback weighting, and — by returning here — no stored vocabulary
+        # of any kind. Sensitive rewards cannot be steered by stored content,
+        # however that content got there.
         chosen = random.choice(_SENSITIVE_THEMES)
         return {
             "theme_family": chosen["theme"],
@@ -574,7 +580,10 @@ def _select_theme(
     preferred_palettes = _sanitized_list(prefs.get("preferred_palettes"))
     favorite_subjects = _sanitized_list(prefs.get("favorite_subjects"))
 
-    themes = _SEED_THEMES.get(intensity, _SEED_THEMES["low"])
+    stored = vocabulary or {}
+    themes = stored.get("theme") or _SEED_THEMES.get(intensity, _SEED_THEMES["low"])
+    styles = stored.get("style") or _SEED_STYLES
+    palettes = stored.get("palette") or _SEED_PALETTES
     return {
         "theme_family": _draw_attribute(
             _extend(themes, favorite_subjects),
@@ -583,13 +592,13 @@ def _select_theme(
             preferred=frozenset(favorite_subjects),
         ),
         "style": _draw_attribute(
-            _extend(_SEED_STYLES, preferred_styles),
+            _extend(styles, preferred_styles),
             axis="style",
             feedback_history=history,
             preferred=frozenset(preferred_styles),
         ),
         "palette": _draw_attribute(
-            _extend(_SEED_PALETTES, preferred_palettes),
+            _extend(palettes, preferred_palettes),
             axis="palette",
             feedback_history=history,
             preferred=frozenset(preferred_palettes),
@@ -705,6 +714,7 @@ async def generate_reward_image(
     sensitive_task: bool = False,
     user_prefs: dict[str, Any] | None = None,
     feedback_history: list[dict[str, Any]] | None = None,
+    vocabulary: dict[str, list[str]] | None = None,
 ) -> ImageGeneration | None:
     """Generate an AI celebration image via OpenAI gpt-image-1.
 
@@ -724,6 +734,7 @@ async def generate_reward_image(
         sensitive_task: If True, uses abstract imagery only
         user_prefs: Optional user reward preferences
         feedback_history: Optional feedback list for theme weighting
+        vocabulary: Optional stored descriptor vocabulary; falls back to seeds
 
     Returns:
         An ImageGeneration (PNG path plus the theme/style/palette used), or
@@ -773,6 +784,7 @@ async def generate_reward_image(
             sensitive_task=sensitive_task,
             user_prefs=user_prefs,
             feedback_history=feedback_history,
+            vocabulary=vocabulary,
         )
 
         prompt = _build_image_prompt(
@@ -1321,6 +1333,17 @@ async def maybe_reward(
         except Exception:
             log.warning("maybe_reward.feedback_history_failed")
             feedback_history = []
+
+        # The stored vocabulary is an enhancement, not a precondition: any
+        # failure degrades to the seed constants rather than to no image.
+        vocabulary: dict[str, list[str]] | None = None
+        try:
+            from app.tools.reward_pool import load_vocabulary
+
+            vocabulary = await load_vocabulary(peer, intensity=intensity_label)
+        except Exception:
+            log.warning("maybe_reward.vocabulary_failed")
+
         image = await generate_reward_image(
             intensity=intensity_label,
             streak_count=1,  # Only current task available; intensity score still uses full streak
@@ -1330,7 +1353,26 @@ async def maybe_reward(
             sensitive_task=sensitive,
             user_prefs=prefs,
             feedback_history=feedback_history,
+            vocabulary=vocabulary,
         )
+
+        if image is not None and vocabulary is not None:
+            # Diagnostic counters only, and already-delivered work: never let
+            # this fail a reward that has been generated.
+            try:
+                from app.tools.reward_pool import record_use
+
+                await record_use(
+                    peer,
+                    selection={
+                        "theme_family": image["theme_family"],
+                        "style": image["style"],
+                        "palette": image["palette"],
+                    },
+                    intensity=intensity_label,
+                )
+            except Exception:
+                log.debug("maybe_reward.record_use_failed")
     elif sensitive:
         # Sensitive: muted emoji only (no image)
         image = None
