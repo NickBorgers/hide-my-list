@@ -220,7 +220,7 @@ flowchart TD
     end
 
     subgraph Generation["Image Generation"]
-        Analyze[Analyze Task + Sensitivity]
+        Analyze[Classify Task Motif + Sensitivity]
         Prefs[Load Reward Preferences + Feedback]
         Theme[Select Weighted Theme]
         Prompt[Build Personalized Prompt]
@@ -252,6 +252,7 @@ await rewards.generate_reward_image(
     intensity="medium",
     streak_count=2,
     task_descriptions=["Review proposal", "Clean desk"],
+    motif="cleanup",  # optional; from classify_task_motif()
     work_type="focus",  # optional
     energy_level="low",  # optional
 )
@@ -259,27 +260,40 @@ await rewards.generate_reward_image(
 
 The function validates its reward inputs before generation:
 
-- `streak_count` must be the positive, post-completion current streak length.
-- Task descriptions are private input — classified for metadata purposes, never embedded verbatim in the image prompt.
-- Blank or missing task descriptions are tolerated and do not abort image generation; the prompt falls back to generic progress imagery driven by intensity and theme selection alone.
+- `streak_count` is the positive, post-completion current streak length. It drives the progress-marker count in the prompt and is clamped there.
+- Task descriptions are private input — never embedded in the prompt and never logged. What connects the image to the task is `motif`, a label the caller obtains from `classify_task_motif()`.
+- Blank or missing task descriptions are tolerated and do not abort image generation; without a usable title there is no motif, and the prompt falls back to generic progress imagery driven by intensity and theme selection alone.
 
-Callers build the task-description list from the current completion session,
-ordered oldest to newest after the completed task has been counted. The list
-resets whenever the completion streak resets. If prior streak history is not
-available, callers must not invent descriptions or marker counts; they should
-start a fresh one-item streak list with the current completed task.
+Classification is the caller's job, not this function's: `generate_reward_image()` makes no LLM calls, so one classification is shared between the image prompt and the manifest row.
+
+Callers pass the current completed task's description. There is no count relationship between descriptions and `streak_count` — descriptions never reach the prompt, so holding only the current task while reporting a longer streak is correct.
 
 Output: `app/tools/rewards.py` generates a PNG, stores it in the reward artifacts volume, writes a manifest row in Postgres, and surfaces the path in `RewardResult.attachment_path`. The COMPLETE node populates `OutboundDraft.attachment_path`, and the send node delivers the image as a Signal attachment via `signal_client.send_message(attachment_paths=[...])`. Only PNG files under the `REWARD_ARTIFACTS_DIR` root are accepted (PNG-only content-type policy).
 
 #### Prompt Personalization Pipeline
 
-Reward prompts are built from three layers:
+Reward prompts are built from four layers:
 
 1. **Intensity theme pool** — low/medium/high/epic control the overall celebration scale; the theme-family, style, and palette are selected from the matching pool
-2. **Preference modifiers** — optional `user_prefs.rewards` values (Postgres) bias style, palette, and subject matter
-3. **Feedback weighting** — prior positive/negative reactions bias future theme-family, style, and palette selection
+2. **Task motif** — the completed task is classified into one label from a fixed motif vocabulary; the label biases theme selection toward scenes tagged for it and contributes one scene line to the prompt
+3. **Preference modifiers** — optional `user_prefs.rewards` values (Postgres) bias style, palette, and subject matter
+4. **Feedback weighting** — prior positive/negative reactions bias future theme-family, style, and palette selection
 
-Task descriptions are private. They are passed to the image-generation call for metadata and sensitivity classification, but `_build_image_prompt()` does not embed task text into the prompt. The prompt is assembled from the selected theme-family, style, palette, streak marker count, humor level, and feedback guidance only. Generic progress imagery is used regardless of whether task text is available.
+Layers 2 and 4 are multiplicative factors on the same candidate weights, so a favored motif and a favored theme compound. Every candidate keeps a non-zero weight: novelty is a hard requirement and no layer may exclude a scene outright.
+
+##### Task Motif Classification
+
+The image is about what the user finished, and the task title still never leaves the local network. Those hold together because classification and generation talk to different places: text inference runs against the local LLM proxy, while image generation calls the external provider.
+
+- `classify_task_motif()` runs on the cheap tier and returns one key from the motif vocabulary in `app/tools/rewards.py` (`errand`, `communication`, `cleanup`, `repair`, `admin`, `creative`, `movement`, `learning`, `planning`, `social`), or nothing.
+- The motif's scene phrase is fixed generic English. No task text is interpolated into it, so the motif label is the only task-derived value that reaches the image provider.
+- Output is checked against the vocabulary allowlist. A task title is user-controlled text, so a title that tries to steer the classifier can at worst select a different celebration scene.
+- A blank title, an off-vocabulary answer, or a classifier failure yields no motif. The prompt then omits the motif line entirely and falls back to generic progress imagery — an unclassifiable task still earns its image.
+- Sensitive tasks are never classified. Their title is not sent to any model, and their imagery stays abstract.
+
+`_build_image_prompt()` assembles the selected theme-family, style, palette, motif phrase, streak marker count, humor level, and feedback guidance. It never embeds task text.
+
+The motif is persisted on `reward_manifests.motif`, which is what makes image relevance auditable: generated PNGs live in a Docker volume, so the manifest row is where the connection between a task and the picture it earned can be checked after the fact.
 
 #### Reward Delivery Contract
 
@@ -328,8 +342,8 @@ Each intensity level has 5+ theme candidates. Selection is weighted by preferenc
 
 When the task classifier detects a private or shame-heavy completion (therapy, medical, legal, financial, or private admin work), reward generation switches to a stricter mode:
 
-- `task_mode` forced to `metaphorical`
-- theme/style/palette chosen only from calm abstract-or-symbolic allowlists
+- the task is not classified into a motif at all — its title is sent to no model, and the imagery carries no readable connection to what the task was
+- theme/style/palette chosen only from calm abstract-or-symbolic allowlists, which ignore both the user's style preferences and any motif affinity
 - humor forced to `subtle`
 - literal task artifacts, mascots, animal scenes, paperwork, money, medical tools, and joke imagery excluded
 
@@ -355,7 +369,7 @@ Supported preference dimensions:
 
 - **Styles** - e.g. watercolor, collage, 3D, graphic illustration
 - **Palettes** - warm, pastel, jewel-tone, neon, nature-led
-- **Subjects** - space, animals, nature, abstract, cozy
+- **Subjects** - space, animals, nature, abstract, cozy. Applied as a soft prompt bias ("where it fits naturally"); the intensity tier and the task motif still decide the composition.
 - **Avoid list** - tags or vibes to suppress
 - **Humor level** - `subtle`, `playful`, or `maximal`
 
@@ -368,7 +382,8 @@ Streak count modifies generated image:
 | Streak | Visual Enhancement |
 |--------|--------------------|
 | 1 | One small glowing progress marker |
-| N > 1 | Exactly N small glowing progress markers, one per completed task in the current streak |
+| 1 < N ≤ 10 | Exactly N small glowing progress markers, one per completed task in the current streak |
+| N > 10 | Ten markers. The marker is a composition detail, not a counter — past roughly a dozen the model stops rendering them as countable objects, so the ask stops growing. |
 
 #### Feedback Loop
 
@@ -403,9 +418,14 @@ reaction can be attributed to them:
 
 These columns are NULL for emoji-only rewards and for rows written when image generation fails.
 
+Two further columns describe the task-to-image relationship rather than the image itself:
+
+- `motif` (TEXT) — the classified task motif. Recorded even when generation fails, because it describes the task, not the picture. NULL for sensitive and emoji-only rewards and when classification yields nothing.
+- `image_failure_reason` (TEXT) — why a delivery fell back to text: `no_api_key`, `not_eligible`, `api_error`, or `empty_response`. NULL when an image was generated or none was attempted. Fixed vocabulary, never user-authored text.
+
 **Idempotency:** `feedback_at IS NULL` prevents double-counting. If a user reacts twice, only the first reaction for a given reward row is recorded. A later reaction may still match another unrated reward inside the tight timestamp window.
 
-**Weighted selection:** `load_feedback_history` loads recent rated rewards for the peer from the last 90 days. `_select_theme` builds the candidate set — the intensity's theme pool crossed with the user's preferred styles and palettes — and scores each candidate with `apply_feedback_weight`, which returns a multiplier in `[0.5, 1.5]`:
+**Weighted selection:** `load_feedback_history` loads recent rated rewards for the peer from the last 90 days. `_select_theme` builds the candidate set — the intensity's theme pool crossed with the user's preferred styles and palettes — and multiplies each candidate's motif affinity by `apply_feedback_weight`, which returns a multiplier in `[0.5, 1.5]`:
 
 - A reaction contributes by match strength: theme `0.6`, style `0.3`, palette `0.1`.
 - Contributions decay linearly over 30 days; older ratings have no effect.
@@ -426,7 +446,7 @@ The prompt guidance is intentionally short and coarse so feedback nudges future 
 Image generation system inherently addresses novelty:
 
 1. **Weighted theme selection** - each intensity has 5+ themes, with preferences and bounded feedback nudging rather than dictating the outcome; no theme is ever permanently excluded
-2. **Task motifs** - the same theme can feel different because the accomplished task changes the scene details
+2. **Task motifs** - the accomplished task changes the scene, both by biasing which theme is drawn and by adding its own scene line, so the same intensity tier reads differently across different kinds of work
 3. **AI variation** - same prompt produces different images each time
 4. **Streak-responsive** - visual elements change as streaks grow
 5. **Expandable pools** - new themes, styles, and palettes can be added without changing the delivery contract

@@ -1,0 +1,8 @@
+id: reward-motif-repair
+node: reward_motif
+peer: "<test-peer-1>"
+inbound: "Fix the wobbly leg on the desk chair"
+tier: cheap
+contracts:
+  - kind: regex_require
+    pattern: "^repair$"
