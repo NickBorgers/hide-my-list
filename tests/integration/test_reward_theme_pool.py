@@ -246,3 +246,82 @@ async def test_intensity_check_constraint_is_enforced(clean_pool: Any) -> None:
             (uuid.uuid4(), _PEER),
         )
     await clean_pool.rollback()
+
+
+_PEER_FLOW = "<test-peer-theme-pool-flow>"
+
+
+@pytest.fixture()
+async def clean_pool_flow() -> Any:
+    """Apply migrations and clear reward_theme_pool for the flow reachability test."""
+    import psycopg
+
+    from app.tools import reward_pool
+
+    conn_str = os.environ["DATABASE_URL"]
+    async with await psycopg.AsyncConnection.connect(conn_str, autocommit=False) as conn:
+        from app.tools.db import _MIGRATIONS_DIR
+
+        for mig in sorted(_MIGRATIONS_DIR.glob("*.sql")):
+            await conn.execute(mig.read_text())  # type: ignore[arg-type]
+        await conn.commit()
+
+        await conn.execute("DELETE FROM reward_theme_pool WHERE peer = %s", (_PEER_FLOW,))
+        await conn.commit()
+        reward_pool._seeded_peers.discard(_PEER_FLOW)
+        yield conn
+
+        await conn.execute("DELETE FROM reward_theme_pool WHERE peer = %s", (_PEER_FLOW,))
+        await conn.commit()
+        reward_pool._seeded_peers.discard(_PEER_FLOW)
+
+
+@pytest.mark.asyncio
+async def test_maybe_reward_seeds_and_records_use_in_db(clean_pool_flow: Any) -> None:
+    """ensure_seeded, load_vocabulary, and record_use are reachable from maybe_reward.
+
+    Clause 1: new public app/tools functions must have an integration test asserting
+    reachability from an end-to-end flow rather than direct calls only.
+    """
+    import uuid
+    from unittest.mock import AsyncMock, patch
+
+    from app.tools import rewards as rewards_module
+    from app.tools.rewards import _SEED_PALETTES, _SEED_STYLES, _SEED_THEMES
+
+    fake_image = {
+        "path": "/tmp/reward_artifacts/test-flow.png",
+        "theme_family": _SEED_THEMES["low"][0],
+        "style": _SEED_STYLES[0],
+        "palette": _SEED_PALETTES[0],
+    }
+
+    with (
+        patch.object(rewards_module, "generate_reward_image", AsyncMock(return_value=fake_image)),
+        patch.object(rewards_module, "write_reward_manifest", AsyncMock(return_value=uuid.uuid4())),
+    ):
+        result = await rewards_module.maybe_reward(
+            peer=_PEER_FLOW,
+            task_title="Placeholder test task",
+            notion_page_id="<page-id-flow>",
+            streak=1,
+            energy_required="Low",
+            time_estimate=15,
+        )
+
+    assert result["text"]
+
+    # ensure_seeded was reached: reward_theme_pool has rows for this peer
+    cur = await clean_pool_flow.execute(
+        "SELECT count(*) FROM reward_theme_pool WHERE peer = %s", (_PEER_FLOW,)
+    )
+    row = await cur.fetchone()
+    assert int(row[0]) > 0, "ensure_seeded was not called — reward_theme_pool is empty"
+
+    # record_use was reached: at least one descriptor's use_count was incremented
+    cur = await clean_pool_flow.execute(
+        "SELECT count(*) FROM reward_theme_pool WHERE peer = %s AND use_count > 0",
+        (_PEER_FLOW,),
+    )
+    row = await cur.fetchone()
+    assert int(row[0]) > 0, "record_use was not called — no use_count incremented"

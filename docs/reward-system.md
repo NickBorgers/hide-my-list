@@ -287,7 +287,7 @@ Reward prompts are built from three layers:
 
 Retirement is a soft delete: a retired row stops appearing in selection but keeps its rating attribution, and can be resurrected. Nothing is ever deleted.
 
-The table is an enhancement, not a precondition. Seeding failure, an unreachable database, and a vocabulary missing any axis all fall back to the seed constants. A partial vocabulary is refused outright rather than used, because a half-loaded axis would silently narrow selection — the failure this design exists to prevent. `reward_theme_pool.value` is embedded verbatim into the image prompt, so it passes `_sanitize_descriptor` before storage and should be treated as user-influenced text in ops queries.
+The table is an enhancement, not a precondition. Seeding failure, an unreachable database, and a vocabulary missing any axis all fall back to the seed constants. A partial vocabulary is refused outright rather than used, because a half-loaded axis would silently narrow selection — the failure this design exists to prevent. `reward_theme_pool.value` is embedded verbatim into the image prompt. The seed population comes from the repo constants above and requires no sanitization; any writer that introduces user-influenced values must pass `_sanitize_descriptor` before inserting. Values are read from the table without further filtering, so treat `reward_theme_pool.value` as user-influenced text in ops queries.
 
 **Sensitive-task rewards never read this table.** Their allowlist stays a code constant and `_select_theme` returns before any vocabulary lookup, so that path cannot be steered by stored content however it got there. This is structural, not a filter.
 
@@ -377,7 +377,7 @@ Supported preference dimensions:
 
 The lookup fails open: a missing row, a missing or wrongly-typed `rewards` subtree, or a database error all yield an empty profile and neutral generation. A preferences failure never blocks a reward.
 
-**Input constraint:** preference values are intended as visual descriptors — art styles, palettes, and subject categories — and must not contain personal detail. `preferred_styles` and `preferred_palettes` are persisted verbatim onto `reward_manifests` as `style` and `palette` when an image is generated. These strings originate from user-supplied preference text with no runtime allowlist enforcement; treat `style` and `palette` manifest columns as user-provided text that may not be free of personal detail in ops queries.
+**Input constraint:** preference values are intended as visual descriptors — art styles, palettes, and subject categories — and must not contain personal detail. Preference-derived values pass `_sanitize_descriptor` before reaching selection; rejected values are dropped without content logging. The drawn descriptor — which may be a sanitized preference value or a seed constant — is persisted on `reward_manifests` as `style` and `palette`. Treat `style` and `palette` manifest columns as user-influenced text in ops queries.
 
 #### Streak Enhancements
 
