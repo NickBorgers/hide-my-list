@@ -359,6 +359,10 @@ Supported preference dimensions:
 - **Avoid list** - tags or vibes to suppress
 - **Humor level** - `subtle`, `playful`, or `maximal`
 
+**How preferences reach image generation:** `maybe_reward` loads the profile with `load_reward_prefs(peer)`, which reads `prefs_json -> 'rewards'` for that peer. A caller may pass preferences explicitly instead, in which case the argument wins and no lookup happens; no caller in the graph does, so the stored profile is what runs in production. Preferences are read from Postgres at reward time rather than carried in LangGraph State, because State is the checkpoint unit — a copy living there would be persisted per conversation thread and drift from the table on every edit.
+
+The lookup fails open: a missing row, a missing or wrongly-typed `rewards` subtree, or a database error all yield an empty profile and neutral generation. A preferences failure never blocks a reward.
+
 **Input constraint:** preference values are intended as visual descriptors — art styles, palettes, and subject categories — and must not contain personal detail. `preferred_styles` and `preferred_palettes` are persisted verbatim onto `reward_manifests` as `style` and `palette` when an image is generated. These strings originate from user-supplied preference text with no runtime allowlist enforcement; treat `style` and `palette` manifest columns as user-provided text that may not be free of personal detail in ops queries.
 
 #### Streak Enhancements
