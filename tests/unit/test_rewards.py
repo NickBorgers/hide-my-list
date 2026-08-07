@@ -1535,6 +1535,139 @@ class TestMaybeRewardMotifWiring:
         assert image_mock.await_args.kwargs["user_prefs"] == {"humor_level": "subtle"}
 
 
+class TestNonLocalTierGuard:
+    """The title may only be sent to a tier that stays on the local network."""
+
+    @pytest.mark.asyncio
+    async def test_external_cheap_tier_blocks_classification(self) -> None:
+        """A tier swapped to an external provider must not receive the title.
+
+        setup/model-tiers.json is editable without touching this call site, so
+        the local-only promise has to be enforced here rather than assumed.
+        """
+        from app.tools.rewards import classify_task_motif
+
+        mock_llm = _llm_answering("errand")
+        with (
+            patch("app.models.is_local_tier", return_value=False),
+            patch("app.models.llm", mock_llm),
+        ):
+            result = await classify_task_motif("Placeholder store run")
+
+        assert result == ""
+        mock_llm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_local_cheap_tier_allows_classification(self) -> None:
+        from app.tools.rewards import classify_task_motif
+
+        with (
+            patch("app.models.is_local_tier", return_value=True),
+            patch("app.models.llm", _llm_answering("errand")),
+        ):
+            assert await classify_task_motif("Placeholder store run") == "errand"
+
+    def test_gemma_is_local_and_external_families_are_not(self) -> None:
+        """Pins which model families count as staying on the tailnet."""
+        from app.models import _LOCAL_MODEL_PREFIXES
+
+        assert any("gemma".startswith(p) for p in _LOCAL_MODEL_PREFIXES)
+        assert not any("claude-sonnet-5".startswith(p) for p in _LOCAL_MODEL_PREFIXES)
+        assert not any("gpt-image-1".startswith(p) for p in _LOCAL_MODEL_PREFIXES)
+
+
+class TestPreferenceSanitization:
+    """Preference text is user-authored and must not reach the image provider."""
+
+    def test_unknown_values_are_dropped(self) -> None:
+        from app.tools.rewards import sanitize_reward_prefs
+
+        clean = sanitize_reward_prefs(
+            {
+                "favorite_subjects": ["space", "zzsentinelpersonalzz"],
+                "avoid": ["spiders", "my neighbor zzsentinelpersonalzz"],
+                "preferred_styles": ["watercolor", "zzsentinelpersonalzz"],
+                "preferred_palettes": ["fire gold", "zzsentinelpersonalzz"],
+            }
+        )
+
+        assert clean["favorite_subjects"] == ["space"]
+        assert clean["avoid"] == ["spiders"]
+        assert clean["preferred_styles"] == ["watercolor"]
+        assert clean["preferred_palettes"] == ["fire gold"]
+
+    def test_matching_is_case_and_space_insensitive(self) -> None:
+        from app.tools.rewards import sanitize_reward_prefs
+
+        clean = sanitize_reward_prefs({"favorite_subjects": ["  SPACE ", "Nature"]})
+        assert clean["favorite_subjects"] == ["space", "nature"]
+
+    def test_styles_and_palettes_come_from_the_theme_pools(self) -> None:
+        """A preference weights what we can draw; it cannot invent a descriptor."""
+        from app.tools.rewards import _ALLOWED_PALETTES, _ALLOWED_STYLES, _THEME_POOLS
+
+        pool_styles = {e["style"] for pool in _THEME_POOLS.values() for e in pool}
+        pool_palettes = {e["palette"] for pool in _THEME_POOLS.values() for e in pool}
+        assert _ALLOWED_STYLES == pool_styles
+        assert _ALLOWED_PALETTES == pool_palettes
+
+    def test_bad_humor_level_falls_back(self) -> None:
+        from app.tools.rewards import sanitize_reward_prefs
+
+        assert sanitize_reward_prefs({"humor_level": "zzsentinelzz"})["humor_level"] == "subtle"
+        assert sanitize_reward_prefs({"humor_level": "maximal"})["humor_level"] == "maximal"
+
+    def test_non_string_values_are_dropped(self) -> None:
+        from app.tools.rewards import sanitize_reward_prefs
+
+        clean = sanitize_reward_prefs({"favorite_subjects": ["space", 42, None]})
+        assert clean["favorite_subjects"] == ["space"]
+
+    def test_dropped_values_are_never_logged(self, caplog: Any) -> None:
+        """The dropped value is precisely the text suspected of carrying detail."""
+        from app.tools.rewards import sanitize_reward_prefs
+
+        with caplog.at_level(logging.DEBUG):
+            sanitize_reward_prefs({"avoid": ["zzsentinelpersonalzz"]})
+
+        assert "zzsentinelpersonalzz" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_generation_sanitizes_before_prompting(self) -> None:
+        """The choke point is generate_reward_image, so every caller is covered."""
+        import base64
+        import tempfile
+
+        from app.tools.rewards import generate_reward_image
+
+        png = base64.b64encode(b"fake-png-bytes").decode()
+        response = MagicMock()
+        response.data = [MagicMock(b64_json=png)]
+        client = MagicMock()
+        client.images = MagicMock()
+        client.images.generate = AsyncMock(return_value=response)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ, {"OPENAI_API_KEY": "test-key", "REWARD_ARTIFACTS_DIR": tmpdir}
+            ):
+                with patch("openai.AsyncOpenAI", MagicMock(return_value=client)):
+                    await generate_reward_image(
+                        intensity="high",
+                        streak_count=1,
+                        task_descriptions=["Placeholder task"],
+                        user_prefs={
+                            "favorite_subjects": ["zzsentinelpersonalzz"],
+                            "avoid": ["zzsentinelpersonalzz"],
+                            "preferred_styles": ["zzsentinelpersonalzz"],
+                            "preferred_palettes": ["zzsentinelpersonalzz"],
+                        },
+                    )
+
+        prompt = client.images.generate.await_args.kwargs["prompt"]
+        assert "zzsentinelpersonalzz" not in prompt
+
+
 class TestLoadUserPrefs:
     """Reward preferences load beside the other peer-scoped reward reads."""
 

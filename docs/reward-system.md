@@ -286,6 +286,7 @@ Layers 2 and 4 are multiplicative factors on the same candidate weights, so a fa
 The image is about what the user finished, and the task title still never leaves the local network. Those hold together because classification and generation talk to different places: text inference runs against the local LLM proxy, while image generation calls the external provider.
 
 - `classify_task_motif()` runs on the cheap tier and returns one key from the motif vocabulary in `app/tools/rewards.py` (`errand`, `communication`, `cleanup`, `repair`, `admin`, `creative`, `movement`, `learning`, `planning`, `social`), or nothing.
+- The local-only claim is enforced, not assumed. `setup/model-tiers.json` can point any tier at an external provider without touching the call site, so `classify_task_motif()` checks `app.models.is_local_tier("cheap")` first and declines to send the title when the tier resolves to a non-local model family. A tier swap costs a themed image, never the title.
 - The motif's scene phrase is fixed generic English. No task text is interpolated into it, so the motif label is the only task-derived value that reaches the image provider.
 - Output is checked against the vocabulary allowlist. A task title is user-controlled text, so a title that tries to steer the classifier can at worst select a different celebration scene.
 - A blank title, an off-vocabulary answer, or a classifier failure yields no motif. The prompt then omits the motif line entirely and falls back to generic progress imagery — an unclassifiable task still earns its image.
@@ -372,7 +373,11 @@ Supported preference dimensions:
 - **Avoid list** - tags or vibes to suppress
 - **Humor level** - `subtle`, `playful`, or `maximal`
 
-**Input constraint:** preference values are intended as visual descriptors — art styles, palettes, and subject categories — and must not contain personal detail. `preferred_styles` and `preferred_palettes` are persisted verbatim onto `reward_manifests` as `style` and `palette` when an image is generated. These strings originate from user-supplied preference text with no runtime allowlist enforcement; treat `style` and `palette` manifest columns as user-provided text that may not be free of personal detail in ops queries.
+**Input constraint:** preference values are visual descriptors — art styles, palettes, and subject categories — and are enforced as such at runtime. `sanitize_reward_prefs()` reduces every dimension to an allowlist immediately before generation: styles and palettes must match the vocabulary the theme pools already use, subjects and avoid terms must match curated category lists, and `humor_level` must be one of the three defined values. Matching is case-insensitive and whitespace-trimmed, and the canonical vocabulary form is what reaches the prompt.
+
+Values outside the allowlist are dropped and never sent. The drop is logged as a count per dimension only — the dropped value is precisely the text suspected of carrying personal detail, so logging it would recreate the exposure the allowlist exists to prevent.
+
+Why this is enforced rather than documented: preference text is user-authored, and every one of these values is joined into the prompt sent to the external image provider. Styles and palettes additionally land on `reward_manifests` as `style` and `palette`, where ops queries read them. Because the allowlist runs before both, those columns now hold vocabulary the system chose.
 
 #### Streak Enhancements
 

@@ -59,8 +59,8 @@ _KNOWN_VIOLATIONS: frozenset[tuple[str, int]] = frozenset(
         # to setup/model-tiers.json and route through app/models.py, or remove
         # image generation from the reward delivery path.
         ("app/tools/rewards.py", 5),    # module docstring listing gpt-image-1
-        ("app/tools/rewards.py", 660),  # function docstring referencing gpt-image-1
-        ("app/tools/rewards.py", 760),  # model="gpt-image-1" in generate_reward_image
+        ("app/tools/rewards.py", 760),  # function docstring referencing gpt-image-1
+        ("app/tools/rewards.py", 869),  # model="gpt-image-1" in generate_reward_image
     ]
 )
 

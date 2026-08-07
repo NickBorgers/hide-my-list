@@ -106,10 +106,9 @@ _SENSITIVE_KEYWORDS: frozenset[str] = frozenset([
 def is_sensitive_task(task_title: str) -> bool:
     """Classify whether a task title is sensitive (private/shame-heavy).
 
-    Sensitive tasks receive suppressed or muted rewards:
-    - task_mode forced to metaphorical
-    - no literal task artifacts in imagery
-    - humor forced to subtle
+    Sensitive tasks receive muted emoji text only:
+    - no motif classification — the title is sent to no model
+    - no image generation, and no abstract fallback image
 
     Args:
         task_title: Task title string (private — not logged by this function).
@@ -388,6 +387,98 @@ _SENSITIVE_THEMES: list[ThemeEntry] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Preference allowlists
+#
+# Reward preferences are user-authored free text. Every one of these values is
+# joined into the prompt sent to the external image provider, so an unvetted
+# preference is a private-data egress waiting for someone to type a name into
+# their "favorite subjects". Styles and palettes additionally land on the
+# manifest row, where ops queries read them.
+#
+# Styles and palettes are allowlisted against the vocabulary the theme pools
+# already use — a preference is a request to weight what we can draw, not to
+# invent a new descriptor. Subjects and avoid terms get curated category lists.
+# Unmatched values are dropped, never sent.
+# ---------------------------------------------------------------------------
+
+_ALLOWED_STYLES: frozenset[str] = frozenset(
+    entry["style"] for pool in _THEME_POOLS.values() for entry in pool
+)
+_ALLOWED_PALETTES: frozenset[str] = frozenset(
+    entry["palette"] for pool in _THEME_POOLS.values() for entry in pool
+)
+
+_ALLOWED_SUBJECTS: frozenset[str] = frozenset([
+    "space", "animals", "cats", "dogs", "birds", "sea life", "nature", "plants",
+    "flowers", "trees", "mountains", "ocean", "weather", "abstract", "geometric",
+    "cozy", "food", "architecture", "music", "books", "vehicles", "machines",
+    "mythology", "seasons", "landscapes",
+])
+
+_ALLOWED_AVOID: frozenset[str] = frozenset([
+    "spiders", "insects", "snakes", "clowns", "crowds", "gore", "horror",
+    "medical", "needles", "hospitals", "money", "paperwork", "fire", "deep water",
+    "heights", "darkness", "text", "faces", "religious imagery", "weapons",
+])
+
+
+def _allowlisted(values: Any, allowed: frozenset[str], *, dimension: str) -> list[str]:
+    """Keep only preference values present in `allowed`.
+
+    Matching is case-insensitive and whitespace-trimmed; the canonical
+    lowercase form is returned so what reaches the prompt is vocabulary we
+    chose, not text the user typed.
+
+    Dropped values are counted, never logged — the dropped value is exactly the
+    text suspected of carrying personal detail.
+    """
+    if not isinstance(values, (list, tuple)):
+        return []
+
+    kept: list[str] = []
+    dropped = 0
+    for value in values:
+        if not isinstance(value, str):
+            dropped += 1
+            continue
+        normalized = value.strip().lower()
+        if normalized in allowed:
+            kept.append(normalized)
+        else:
+            dropped += 1
+
+    if dropped:
+        log.info("reward_prefs.values_dropped", dimension=dimension, dropped=dropped)
+    return kept
+
+
+def sanitize_reward_prefs(prefs: dict[str, Any] | None) -> dict[str, Any]:
+    """Reduce reward preferences to values safe to send to the image provider.
+
+    Applied at the point of use rather than at load, so every caller of
+    generate_reward_image() is covered regardless of where its prefs came from.
+
+    `humor_level` is a closed set of three values, so it is validated rather
+    than allowlisted; anything else falls back to the default.
+    """
+    prefs = prefs or {}
+    humor = prefs.get("humor_level")
+    return {
+        "preferred_styles": _allowlisted(
+            prefs.get("preferred_styles"), _ALLOWED_STYLES, dimension="styles"
+        ),
+        "preferred_palettes": _allowlisted(
+            prefs.get("preferred_palettes"), _ALLOWED_PALETTES, dimension="palettes"
+        ),
+        "favorite_subjects": _allowlisted(
+            prefs.get("favorite_subjects"), _ALLOWED_SUBJECTS, dimension="subjects"
+        ),
+        "avoid": _allowlisted(prefs.get("avoid"), _ALLOWED_AVOID, dimension="avoid"),
+        "humor_level": humor if humor in ("subtle", "playful", "maximal") else "subtle",
+    }
+
+
 _MOTIF_SYSTEM_PROMPT = f"""You label a completed to-do task with ONE motif.
 
 Valid labels:
@@ -423,7 +514,16 @@ async def classify_task_motif(task_title: str) -> str:
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        from app.models import llm
+        from app.models import is_local_tier, llm
+
+        # The whole reason this caller may see the task title is that the tier
+        # stays on the tailnet. setup/model-tiers.json can be swapped to an
+        # external provider without touching this file, so the promise is
+        # checked here rather than assumed. A non-local tier costs a themed
+        # image, never the title.
+        if not is_local_tier("cheap"):
+            log.warning("reward_motif.non_local_tier")
+            return ""
 
         model = llm("cheap", caller="reward_motif")
         response = await model.ainvoke(
@@ -720,6 +820,11 @@ async def generate_reward_image(
     # Normalize before any log: an off-vocabulary value would be a raw task-derived
     # string (private data). Known keys are generic vocabulary — safe to log.
     motif = motif if motif in _MOTIFS else ""
+
+    # Reduce preferences to allowlisted vocabulary before they can reach the
+    # prompt. Preference values are user-authored text and this is the last
+    # point before they would leave the local network.
+    user_prefs = sanitize_reward_prefs(user_prefs)
 
     _img_gen_start = time.monotonic()
     log.info(
