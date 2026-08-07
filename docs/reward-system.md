@@ -408,8 +408,12 @@ These columns are NULL for emoji-only rewards and for rows written when image ge
 **Weighted selection:** `load_feedback_history` loads recent rated rewards for the peer from the last 90 days. `_select_theme` builds the candidate set — the intensity's theme pool crossed with the user's preferred styles and palettes — and scores each candidate with `apply_feedback_weight`, which returns a multiplier in `[0.5, 1.5]`:
 
 - A reaction contributes by match strength: theme `0.6`, style `0.3`, palette `0.1`.
-- Contributions decay linearly over 30 days; older ratings have no effect.
+- Contributions decay exponentially with a 45-day half-life: a rating counts fully the day it is given, at half strength after 45 days, and at quarter strength at the 90-day edge of the load window. Ratings older than the window are not loaded at all.
 - The total nudge is capped at ±0.5.
+
+The decay curve has no hard cutoff inside the window, so the load window is the only place a rating stops counting. Both numbers live in `app/tools/rewards.py` as `_FEEDBACK_WINDOW_DAYS` and `_FEEDBACK_HALF_LIFE_DAYS`, and the load window feeds `load_feedback_history`'s default so the two cannot drift apart.
+
+Why exponential rather than a fixed expiry: at this system's rating volume — a handful of image rewards a day, only some of them reacted to — a hard cutoff throws away most of the evidence the user has given. Gradual decay keeps old ratings contributing something while still letting recent taste dominate.
 
 Selection is then a weighted random draw. Every candidate keeps a non-zero probability regardless of feedback: novelty is the mechanism the image system exists to provide, so feedback biases selection and never eliminates a theme. A single reaction shifts the odds slightly; a consistent pattern shifts them meaningfully.
 

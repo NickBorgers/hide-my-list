@@ -462,6 +462,111 @@ class TestImageGenerationCallContract:
         assert kwargs["n"] == 1
 
 
+class TestFeedbackDecay:
+    """Rating influence fades gradually instead of falling off a cliff.
+
+    apply_feedback_weight() used to zero any rating >= 30 days old while
+    load_feedback_history() loaded 90 days, so two thirds of every loaded
+    history was guaranteed to contribute nothing. At this system's rating
+    volume that discarded most of the evidence the user had given.
+    """
+
+    THEME = "phoenix rising from golden flames"
+
+    def _nudge(self, timestamp: str) -> float:
+        """Weight delta from one positive rating that matches on palette only.
+
+        Deliberately a partial match. A full theme+style+palette match scores
+        1.0 before decay, which the +/-0.5 nudge cap clamps flat — the curve
+        under test would be invisible at every age. Palette alone scores 0.1,
+        so the whole 90-day range stays inside the cap.
+        """
+        from app.tools.rewards import apply_feedback_weight
+
+        history = [
+            {
+                "score": 1,
+                "theme_family": "some other theme",
+                "style": "some other style",
+                "palette": "fire gold",
+                "timestamp": timestamp,
+            }
+        ]
+        weight = apply_feedback_weight(
+            history,
+            theme_family=self.THEME,
+            style="majestic illustration",
+            palette="fire gold",
+        )
+        return weight - 1.0
+
+    @staticmethod
+    def _aged(age_days: float) -> str:
+        return (datetime.now(UTC) - timedelta(days=age_days)).isoformat()
+
+    def test_decay_curve_halves_every_half_life(self) -> None:
+        """Full strength today, half at 45 days, quarter at the 90-day edge."""
+        from app.tools.rewards import _feedback_decay
+
+        assert _feedback_decay(0) == pytest.approx(1.0)
+        assert _feedback_decay(45) == pytest.approx(0.5)
+        assert _feedback_decay(90) == pytest.approx(0.25)
+
+    def test_decay_clamps_negative_ages(self) -> None:
+        """Clock skew must not manufacture influence above the same-day maximum."""
+        from app.tools.rewards import _feedback_decay
+
+        assert _feedback_decay(-30) == pytest.approx(1.0)
+
+    def test_influence_decreases_monotonically_with_age(self) -> None:
+        """A mid-life rating counts less than a fresh one but more than an old one."""
+        fresh = self._nudge(self._aged(0))
+        half_life = self._nudge(self._aged(45))
+        window_edge = self._nudge(self._aged(90))
+
+        assert fresh > half_life > window_edge > 0
+
+    def test_rating_at_window_edge_still_contributes(self) -> None:
+        """A 90-day-old rating is still evidence.
+
+        Regression: the old 30-day cliff zeroed it entirely even though
+        load_feedback_history had gone to the trouble of loading it.
+        """
+        assert self._nudge(self._aged(90)) > 0
+
+    def test_future_dated_rating_counts_as_fresh_not_more(self) -> None:
+        """Clock skew clamps to the same-day maximum rather than exceeding it."""
+        future = self._nudge(self._aged(-30))
+        fresh = self._nudge(self._aged(0))
+
+        assert future == pytest.approx(fresh)
+
+    def test_unparseable_timestamp_degrades_instead_of_raising(self) -> None:
+        """A malformed row contributes negligibly rather than breaking selection.
+
+        It is treated as sitting at the far edge of the load window: still
+        counted, but worth the least of anything that survives the window.
+        """
+        malformed = self._nudge("not-a-timestamp")
+
+        assert malformed > 0
+        assert malformed == pytest.approx(self._nudge(self._aged(90)))
+        assert malformed < self._nudge(self._aged(0))
+
+    def test_load_window_matches_the_decay_constants(self) -> None:
+        """The load window and the decay curve cannot drift apart.
+
+        A window narrower than the decay reach truncates ratings that should
+        still count; a window wider loads rows that can never matter.
+        """
+        import inspect
+
+        from app.tools.rewards import _FEEDBACK_WINDOW_DAYS, load_feedback_history
+
+        default = inspect.signature(load_feedback_history).parameters["days"].default
+        assert default == _FEEDBACK_WINDOW_DAYS
+
+
 class TestFeedbackWeightedSelection:
     """Emoji reactions must actually steer future image selection.
 
