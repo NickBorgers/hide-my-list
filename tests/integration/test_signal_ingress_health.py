@@ -34,11 +34,18 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture()
 async def db_conn() -> Any:
-    """Provide a psycopg connection with all migrations applied and signal_ingress_health clean."""
+    """Provide a psycopg connection with all migrations applied and signal_ingress_health clean.
+
+    dict_row is required, not stylistic: the assertions below index rows by
+    column name, which raises TypeError against psycopg's default tuple rows.
+    """
     import psycopg
+    import psycopg.rows
 
     conn_str = os.environ["DATABASE_URL"]
-    async with await psycopg.AsyncConnection.connect(conn_str, autocommit=False) as conn:
+    async with await psycopg.AsyncConnection.connect(
+        conn_str, row_factory=psycopg.rows.dict_row, autocommit=False
+    ) as conn:
         from app.tools.db import _MIGRATIONS_DIR
 
         for mig in sorted(_MIGRATIONS_DIR.glob("*.sql")):

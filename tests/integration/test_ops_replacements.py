@@ -36,8 +36,18 @@ def _now() -> datetime:
 
 
 async def _clean_tables(conn: Any) -> None:
-    """Truncate ops_alerts and ops_alerts_throttle before each test."""
-    await conn.execute("TRUNCATE ops_alerts, ops_alerts_throttle RESTART IDENTITY CASCADE")
+    """Truncate the tables these tests write, before each test.
+
+    recent_outbound belongs here even though only the state_audit tests touch
+    it: those tests insert fixed (peer, signal_timestamp) primary keys, and
+    state_audit deliberately prunes only *expired* rows. The fresh row it leaves
+    behind survives the run, so a second run against the same database collides
+    on the primary key. CI gets a fresh container each time and would never see
+    it; anyone running the suite twice locally would.
+    """
+    await conn.execute(
+        "TRUNCATE ops_alerts, ops_alerts_throttle, recent_outbound RESTART IDENTITY CASCADE"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,15 +1,21 @@
 name: Python Validation
 
 # Runs on every PR so the required "Python Validation Required" check always
-# reports. The lint/type/test jobs (ruff, mypy, pytest-unit) are gated on the
-# `changes` job, which detects whether the PR touches Python source under
-# app/, migrations/, tests/, scripts/*.py, or pyproject.toml. On PRs with no
-# Python changes those jobs skip and the required check reports green quickly.
+# reports. The lint/type/test jobs (ruff, mypy, pytest-unit, pytest-db) are
+# gated on the `changes` job, which detects whether the PR touches Python
+# source under app/, migrations/, tests/, scripts/*.py, or pyproject.toml. On
+# PRs with no Python changes those jobs skip and the required check reports
+# green quickly.
 #
-# This is a required check: ALL three gates (ruff, mypy, pytest-unit) must
-# pass before merge. Integration tests (pytest-integration) run only when
-# DATABASE_URL is available in the environment; they are advisory in CI
-# (no DATABASE_URL secret exposed) and pass as skipped.
+# This is a required check: ALL four gates must pass before merge.
+#
+# pytest-db runs tests/integration/ and tests/regressions/ against a Postgres
+# service container. No secret is involved — the container supplies its own
+# credentials, and every outbound client (Notion, Signal, LLM) is faked. The
+# DB-backed tests self-skip when DATABASE_URL is absent, so
+# tests/integration/test_db_service_present.py acts as a positive control:
+# under CI it fails rather than skips if the service is missing, which keeps a
+# broken container from reporting a green required check.
 #
 # Security model:
 # - GitHub-hosted runners (ubuntu-latest): ephemeral, safe for untrusted code
@@ -131,10 +137,66 @@ jobs:
       - name: Run unit tests
         run: pytest tests/unit/ -x -q
 
+  pytest-db:
+    name: Pytest DB Suites
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # The database must be named `hml`: migrations/0005_readonly_user.sql issues
+    # `GRANT CONNECT ON DATABASE hml`, which is a literal, not current_database().
+    # Any other name fails migration 0005 and takes every DB-backed test with it.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hml
+          POSTGRES_PASSWORD: hml
+          POSTGRES_DB: hml
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://hml:hml@localhost:5432/hml
+      # Placeholder identities. No secrets: the suites fake every outbound
+      # client, and the LLM proxy is unreachable from a GitHub-hosted runner
+      # anyway. The discard port (9) refuses instantly, so any code path that
+      # unexpectedly reaches for the proxy fails fast instead of hanging.
+      AUTHORIZED_PEERS: '+15550000001,+15550000002'
+      SIGNAL_ACCOUNT: '+15550009999'
+      LLM_PROXY_BASE_URL: 'http://127.0.0.1:9/v1'
+      LLM_PROXY_API_KEY: 'placeholder'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install --quiet -e ".[dev]"
+
+      - name: Run integration and regression tests
+        env:
+          REWARD_ARTIFACTS_DIR: ${{ runner.temp }}/reward_artifacts
+        run: |
+          mkdir -p "$REWARD_ARTIFACTS_DIR"
+          pytest tests/integration/ tests/regressions/ -q
+
   python-all-passed:
     name: Python Validation Required
     runs-on: ubuntu-latest
-    needs: [changes, ruff, mypy, pytest-unit]
+    needs: [changes, ruff, mypy, pytest-unit, pytest-db]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
 
     steps:
@@ -159,6 +221,10 @@ jobs:
             echo "Pytest Unit Tests: ${{ needs.pytest-unit.result }}"
             failed=true
           fi
+          if ! check_result "${{ needs.pytest-db.result }}"; then
+            echo "Pytest DB Suites: ${{ needs.pytest-db.result }}"
+            failed=true
+          fi
 
           if [ "$failed" = true ]; then
             echo ""
@@ -172,3 +238,4 @@ jobs:
           echo "  Ruff Lint: ${{ needs.ruff.result }}"
           echo "  Mypy Type Check: ${{ needs.mypy.result }}"
           echo "  Pytest Unit Tests: ${{ needs.pytest-unit.result }}"
+          echo "  Pytest DB Suites: ${{ needs.pytest-db.result }}"

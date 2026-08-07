@@ -26,9 +26,10 @@ fires on every PR that touches `app/**`, `migrations/**`, `setup/model-tiers.jso
 
 | Layer | Wall time | LLM cost | Frequency |
 |---|---|---|---|
-| Unit | <30 s | $0 | every commit |
-| Integration | <2 min | $0 | every commit |
-| Structural lints | <10 s | $0 | every commit |
+| Unit | <30 s | $0 | every commit — `pytest-unit` job |
+| Integration | <2 min | $0 | every commit — `pytest-db` job (Postgres service container) |
+| Regressions | <1 min | $0 | every commit — `pytest-db` job |
+| Structural lints | <10 s | $0 | every commit — `pytest-unit` job |
 | Compose smoke | <3 min | $0 | gated by `ENABLE_COMPOSE_SMOKE=true` — runs on demand only |
 | Evals (baseline) | 10-20 min | ~$2-5 | `.github/workflows/nightly-evals.yml` — cron 09:00 UTC + `workflow_dispatch` |
 | Model-swap report | 15-30 min | ~$5-10 | `.github/workflows/model-swap.yml` — `workflow_dispatch` only |
