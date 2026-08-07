@@ -49,6 +49,9 @@ from typing import Any
 
 import yaml
 
+from tests.support import notion_fake
+from tests.support.notion_fake import FakeNotion
+
 log = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
@@ -336,35 +339,14 @@ def evaluate_contracts(
 # ---------------------------------------------------------------------------
 
 
-_SELECT_PROPS = ("Work Type", "Energy Required", "Status")
-_NUMBER_PROPS = ("Time Estimate (min)", "Rejection Count", "Urgency")
-_CHECKBOX_PROPS = ("Is Reminder",)
-
-
-def _as_notion_page(task: dict[str, Any]) -> dict[str, Any]:
-    """Build a Notion page payload from a fixture's shorthand task dict.
-
-    Fixtures declare tasks as flat `{id, title, work_type, time_estimate}`
-    mappings. Nodes read the nested Notion property shape, so translate
-    here rather than making every fixture author hand-write Notion JSON.
-    Property names must track `docs/notion-schema.md`.
-    """
-    props: dict[str, Any] = {
-        "Title": {"title": [{"plain_text": task.get("title", "")}]},
-    }
-    for prop in _SELECT_PROPS:
-        key = prop.lower().replace(" ", "_").replace("(", "").replace(")", "")
-        if key in task:
-            props[prop] = {"select": {"name": task[key]}}
-    for prop in _NUMBER_PROPS:
-        key = prop.split(" (")[0].lower().replace(" ", "_")
-        if key in task:
-            props[prop] = {"number": task[key]}
-    for prop in _CHECKBOX_PROPS:
-        key = prop.lower().replace(" ", "_")
-        if key in task:
-            props[prop] = {"checkbox": bool(task[key])}
-    return {"id": task.get("id", ""), "properties": props}
+# The flat-shorthand -> Notion-property translator lives in tests/support so the
+# eval and conversation layers cannot drift into two different readings of
+# docs/notion-schema.md. Re-exported under the module-private names this file
+# has always used.
+_SELECT_PROPS = notion_fake._SELECT_PROPS
+_NUMBER_PROPS = notion_fake._NUMBER_PROPS
+_CHECKBOX_PROPS = notion_fake._CHECKBOX_PROPS
+_as_notion_page = notion_fake.as_notion_page
 
 
 def _install_notion_stub(fixture: Fixture) -> Callable[[], None]:
@@ -373,39 +355,13 @@ def _install_notion_stub(fixture: Fixture) -> Callable[[], None]:
     Evals must score the model, not the state of a live Notion database.
     Reads return the fixture's `notion_tasks`; writes are accepted and
     discarded. Returns an undo callable.
+
+    `discard_writes=True` is what keeps eval semantics unchanged: a node that
+    marks a task In Progress must not alter what a later read in the same
+    fixture returns, because the fixture — not the run — defines the world.
     """
-    from app.tools import notion  # noqa: PLC0415
-
-    pages = [_as_notion_page(t) for t in fixture.notion_tasks]
-
-    async def _read(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"results": pages}
-
-    async def _write(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {}
-
-    stubs: dict[str, Any] = {
-        "query_pending": _read,
-        "query_all": _read,
-        "query_due_reminders": _read,
-        "query_tasks_with_unscheduled_deadlines": _read,
-        "query_scheduled_tasks_with_deadlines": _read,
-        "update_property": _write,
-        "update_status": _write,
-        "create_task": _write,
-        "create_reminder": _write,
-        "complete_reminder": _write,
-        "mark_reminder_scheduled": _write,
-    }
-    original = {name: getattr(notion, name) for name in stubs}
-    for name, fn in stubs.items():
-        setattr(notion, name, fn)
-
-    def _undo() -> None:
-        for name, fn in original.items():
-            setattr(notion, name, fn)
-
-    return _undo
+    fake = FakeNotion(fixture.notion_tasks, discard_writes=True, filter_reads=False)
+    return fake.install()
 
 
 def _invoke_node(node: str, fixture: Fixture) -> tuple[str, str | None]:
