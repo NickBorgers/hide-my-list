@@ -160,7 +160,11 @@ async def test_loaded_prefs_reach_theme_selection(clean_prefs: Any) -> None:
     )
 
     prefs = await load_reward_prefs(_PEER)
-    selection = _select_theme(intensity="medium", user_prefs=prefs)
 
-    assert selection["style"] == "placeholder distinctive style"
-    assert selection["palette"] == "placeholder distinctive palette"
+    # Preferences bias the draw rather than replacing the vocabulary, so assert
+    # over samples: the stated values must be reachable, and must not be the
+    # only reachable ones.
+    styles = {_select_theme(intensity="medium", user_prefs=prefs)["style"] for _ in range(200)}
+
+    assert "placeholder distinctive style" in styles
+    assert len(styles) > 1, "a stated preference must bias selection, not lock it"

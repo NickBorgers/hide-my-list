@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import time
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -257,36 +259,80 @@ def get_fallback_reward() -> str:
 # docs/reward-system.md: AI-Generated Celebration Images section
 # ---------------------------------------------------------------------------
 
-_THEME_POOLS: dict[str, list[dict[str, str]]] = {
+# Theme, style, and palette are drawn independently rather than as welded
+# triples. Two reasons:
+#
+#   Combinations. Five triples per intensity is five reachable images, and
+#   habituation is the failure mode the image system exists to prevent. The
+#   same strings, drawn independently, reach 5 x 8 x 8 = 320.
+#
+#   Learning. Welded triples make every attribute exactly as sparse as the
+#   rarest one, so no attribute can ever accumulate enough ratings to mean
+#   anything. Split apart, one rating updates three parameters, and style and
+#   palette pool their observations across all four intensities.
+#
+# Style and palette are deliberately intensity-agnostic: scoping them per
+# intensity would quarter their observation rate, which is the whole reason
+# they are the axes that can learn. The theme string and the prompt's mood
+# line carry the intensity semantics instead.
+_SEED_THEMES: dict[str, list[str]] = {
     "low": [
-        {"theme": "cheerful bird with sparkle", "style": "watercolor", "palette": "warm pastel"},
-        {"theme": "paper airplane soaring through clouds", "style": "paper collage", "palette": "soft blue"},
-        {"theme": "happy cat in sunbeam", "style": "storybook illustration", "palette": "cozy warm"},
-        {"theme": "small garden with blooming flowers", "style": "watercolor", "palette": "nature green"},
-        {"theme": "cozy reading nook with warm light", "style": "impressionist", "palette": "amber glow"},
+        "cheerful bird with sparkle",
+        "paper airplane soaring through clouds",
+        "happy cat in sunbeam",
+        "small garden with blooming flowers",
+        "cozy reading nook with warm light",
     ],
     "medium": [
-        {"theme": "fox dancing in wildflowers", "style": "vibrant illustration", "palette": "jewel tones"},
-        {"theme": "confetti explosion in bright colors", "style": "graphic art", "palette": "rainbow"},
-        {"theme": "otter sliding down rainbow waterfall", "style": "cartoon", "palette": "neon pastel"},
-        {"theme": "butterfly emerging from cocoon in golden light", "style": "watercolor", "palette": "golden"},
-        {"theme": "mountain summit with celebration flags", "style": "adventure illustration", "palette": "crisp blue"},
+        "fox dancing in wildflowers",
+        "confetti explosion in bright colors",
+        "otter sliding down rainbow waterfall",
+        "butterfly emerging from cocoon in golden light",
+        "mountain summit with celebration flags",
     ],
     "high": [
-        {"theme": "phoenix rising from golden flames", "style": "majestic illustration", "palette": "fire gold"},
-        {"theme": "astronaut planting flag on colorful planet", "style": "space art", "palette": "cosmic purple"},
-        {"theme": "whale breaching in starfield", "style": "surreal art", "palette": "midnight blue"},
-        {"theme": "ancient temple lit by aurora borealis", "style": "epic landscape", "palette": "aurora jewel"},
-        {"theme": "eagle soaring above mountain range at dawn", "style": "realistic", "palette": "sunrise red"},
+        "phoenix rising from golden flames",
+        "astronaut planting flag on colorful planet",
+        "whale breaching in starfield",
+        "ancient temple lit by aurora borealis",
+        "eagle soaring above mountain range at dawn",
     ],
     "epic": [
-        {"theme": "galaxy forming crown of light", "style": "cosmic art", "palette": "nebula purple"},
-        {"theme": "reality folding into cathedral of light", "style": "transcendent digital art", "palette": "iridescent"},
-        {"theme": "cosmic phoenix ascending through dimensional portal", "style": "epic sci-fi", "palette": "gold and violet"},
-        {"theme": "universe crystallizing into perfect order", "style": "abstract cosmic", "palette": "prismatic"},
-        {"theme": "ancient forest where trees become stars", "style": "mythic illustration", "palette": "silver and emerald"},
+        "galaxy forming crown of light",
+        "reality folding into cathedral of light",
+        "cosmic phoenix ascending through dimensional portal",
+        "universe crystallizing into perfect order",
+        "ancient forest where trees become stars",
     ],
 }
+
+# Consolidated from the 18 distinct styles the welded triples carried. Fewer,
+# broader values on purpose: distinguishing a liked style from a disliked one
+# needs roughly 40 ratings for that style, so vocabulary size is a budget, not
+# a feature. These eight span the range the original 18 covered.
+_SEED_STYLES: list[str] = [
+    "watercolor",
+    "paper collage",
+    "storybook illustration",
+    "impressionist painting",
+    "bold graphic illustration",
+    "cartoon",
+    "digital concept art",
+    "oil painting",
+]
+
+# Consolidated from the 20 distinct palettes the welded triples carried, kept
+# to eight for the same reason. Spans warm, cool, deep, and bright.
+_SEED_PALETTES: list[str] = [
+    "warm pastel",
+    "soft blue",
+    "nature green",
+    "amber gold",
+    "jewel tones",
+    "cosmic purple",
+    "midnight blue",
+    "iridescent prism",
+]
 
 _SENSITIVE_THEMES: list[dict[str, str]] = [
     {"theme": "abstract geometric pattern expanding outward", "style": "minimalist", "palette": "calm blue-grey"},
@@ -295,6 +341,202 @@ _SENSITIVE_THEMES: list[dict[str, str]] = [
     {"theme": "growing seedling in quiet soil", "style": "simple illustration", "palette": "natural green"},
     {"theme": "single candle flame in dark, steady and bright", "style": "minimal", "palette": "warm amber"},
 ]
+
+
+# Descriptors reach the image prompt verbatim, and their sources are not
+# trustworthy: user-authored preference text today, LLM-proposed values later.
+# The character allowlist is the control that actually works — it removes every
+# character usable to break out of the "Theme: {x}." framing in
+# _build_image_prompt (newlines, colons, braces, brackets, quotes, backticks,
+# parentheses). The term lists below are defense in depth and will always be
+# incomplete; do not rely on them alone.
+_DESCRIPTOR_ALLOWED = re.compile(r"^[a-z0-9 ,'-]+$")
+_DESCRIPTOR_MAX_CHARS = 60
+_DESCRIPTOR_MAX_WORDS = 8
+
+_BANNED_DESCRIPTOR_TERMS: frozenset[str] = frozenset([
+    # Instruction verbs — an attempt to address the image model directly.
+    "ignore", "instead", "disregard", "override", "prompt", "system",
+    # Text rendering — the prompt already forbids lettering; a descriptor
+    # asking for it is either an attack or a guaranteed bad image.
+    "text", "word", "letter", "caption", "logo", "watermark", "signature",
+    # Identity — celebration art depicts no one in particular.
+    "person", "child", "nude", "celebrity",
+])
+
+
+def _sanitize_descriptor(value: Any) -> str | None:
+    """Normalize an untrusted theme/style/palette descriptor, or reject it.
+
+    Returns the cleaned descriptor, or None if it fails any check. Callers drop
+    rejects silently and log a count only — the value itself may be
+    user-authored text and must never reach a log.
+    """
+    if not isinstance(value, str):
+        return None
+
+    normalized = unicodedata.normalize("NFKC", value)
+
+    # Reject line breaks and control characters outright rather than folding
+    # them into spaces. Collapsing first would silently rewrite an injection
+    # attempt into an accepted descriptor, which is both a weaker defense and
+    # a surprising one — the stored value would not be what anyone wrote.
+    if any(ch.isspace() and ch != " " for ch in normalized):
+        return None
+    if any(unicodedata.category(ch).startswith("C") for ch in normalized):
+        return None
+
+    cleaned = " ".join(part for part in normalized.split(" ") if part).lower()
+    if not cleaned or len(cleaned) > _DESCRIPTOR_MAX_CHARS:
+        return None
+
+    words = cleaned.split(" ")
+    if len(words) > _DESCRIPTOR_MAX_WORDS:
+        return None
+
+    if not _DESCRIPTOR_ALLOWED.match(cleaned):
+        return None
+
+    if any(term in cleaned for term in _BANNED_DESCRIPTOR_TERMS):
+        return None
+
+    # Sensitive subject matter is handled by a separate locked pool; a
+    # preference must not smuggle it into the ordinary path.
+    if any(keyword in cleaned for keyword in _SENSITIVE_KEYWORDS):
+        return None
+
+    return cleaned
+
+
+def _sanitized_list(values: Any) -> list[str]:
+    """Sanitize a preference list, dropping rejects with a count-only log."""
+    if not isinstance(values, list):
+        return []
+
+    kept: list[str] = []
+    for value in values:
+        cleaned = _sanitize_descriptor(value)
+        if cleaned is not None and cleaned not in kept:
+            kept.append(cleaned)
+
+    rejected = len(values) - len(kept)
+    if rejected > 0:
+        # Count only. The rejected values are user-authored text.
+        log.info("reward_descriptor.rejected", count=rejected)
+    return kept
+
+
+# Selection tuning. See docs/reward-system.md: Weighted Selection.
+#
+# Per-axis nudge caps, deliberately inverted from the old match weights
+# (theme 0.6, style 0.3, palette 0.1). Theme is the highest-cardinality axis
+# and the one that rarely repeats, so it is where novelty is spent and where
+# feedback should push least. Style and palette repeat constantly, so they are
+# where evidence actually accumulates.
+_AXIS_NUDGE_CAP: dict[str, float] = {
+    "theme_family": 0.25,
+    "style": 0.50,
+    "palette": 0.50,
+}
+
+# Beta(1,1) prior: an unrated value sits at p=0.5, neither favored nor punished.
+_FEEDBACK_PRIOR = 1.0
+# Confidence half-saturation: a value needs ~3 effective ratings before its
+# estimate carries half its potential weight. Keeps one reaction from swinging
+# selection.
+_FEEDBACK_CONFIDENCE_SCALE = 3.0
+# Share of every draw reserved for a uniform pick. This is the novelty floor:
+# no active value can fall below _SELECTION_EPSILON / len(vocabulary),
+# regardless of how lopsided the feedback gets.
+_SELECTION_EPSILON = 0.15
+# Multiplier applied to values the user explicitly asked for. Preferences bias
+# the draw; they do not replace the vocabulary, because a single stated style
+# would otherwise appear on every image and eliminate style novelty outright.
+_PREFERENCE_BONUS = 1.5
+
+
+def _attribute_weight(
+    feedback_history: list[dict[str, Any]],
+    *,
+    axis: str,
+    value: str,
+) -> float:
+    """Weight for one descriptor on one axis, from decayed rating counts.
+
+    Positive and negative ratings accumulate separately with time decay, then
+    combine into a Beta-smoothed success rate scaled by how much evidence
+    exists. With no ratings the result is exactly 1.0, so an unrated value is
+    drawn at the same rate as any other — cold start is a uniform draw.
+    """
+    positives = 0.0
+    negatives = 0.0
+
+    for entry in feedback_history:
+        if entry.get(axis, "") != value:
+            continue
+        score = entry.get("score", 0)
+        if not score:
+            # Unknown emoji: recorded as acknowledgment, carries no direction.
+            continue
+
+        try:
+            entry_ts = datetime.fromisoformat(
+                str(entry.get("timestamp", "")).replace("Z", "+00:00")
+            )
+            age_days = (datetime.now(UTC) - entry_ts).total_seconds() / 86400.0
+        except (ValueError, TypeError, AttributeError):
+            age_days = float(_FEEDBACK_WINDOW_DAYS)
+
+        decay = _feedback_decay(age_days)
+        if score > 0:
+            positives += decay
+        else:
+            negatives += decay
+
+    observed = positives + negatives
+    if observed == 0:
+        return 1.0
+
+    success_rate = (positives + _FEEDBACK_PRIOR) / (observed + 2 * _FEEDBACK_PRIOR)
+    confidence = observed / (observed + _FEEDBACK_CONFIDENCE_SCALE)
+    cap = _AXIS_NUDGE_CAP[axis]
+
+    return 1.0 + cap * (2 * success_rate - 1) * confidence
+
+
+def _draw_attribute(
+    vocabulary: list[str],
+    *,
+    axis: str,
+    feedback_history: list[dict[str, Any]],
+    preferred: frozenset[str] = frozenset(),
+) -> str:
+    """Draw one descriptor, biased by feedback but never locked to one value.
+
+    Weights are mixed with a uniform distribution at _SELECTION_EPSILON, which
+    is what enforces the novelty floor: every value keeps at least
+    _SELECTION_EPSILON / len(vocabulary) probability no matter how negative its
+    history. docs/reward-system.md treats habituation as the failure mode the
+    image system exists to prevent, so no descriptor may ever be excluded.
+    """
+    weights = []
+    for value in vocabulary:
+        weight = _attribute_weight(feedback_history, axis=axis, value=value)
+        if value in preferred:
+            weight *= _PREFERENCE_BONUS
+        weights.append(weight)
+
+    total = sum(weights)
+    uniform = 1.0 / len(vocabulary)
+    if total <= 0:
+        probabilities = [uniform] * len(vocabulary)
+    else:
+        probabilities = [
+            (1 - _SELECTION_EPSILON) * (w / total) + _SELECTION_EPSILON * uniform
+            for w in weights
+        ]
+
+    return random.choices(vocabulary, weights=probabilities, k=1)[0]
 
 
 def _select_theme(
@@ -306,52 +548,58 @@ def _select_theme(
 ) -> dict[str, str]:
     """Pick a theme/style/palette, biased by prior emoji-reaction feedback.
 
-    Candidates are the intensity's theme pool crossed with the user's preferred
-    styles and palettes (when set). Each candidate is weighted by
-    apply_feedback_weight(), whose influence halves every 45 days and whose
-    total nudge is capped at +/-0.5 — so feedback nudges selection without ever
-    locking it to one theme. Novelty
-    is a hard requirement of docs/reward-system.md, so every candidate keeps a
-    non-zero chance of being selected.
+    Each axis is drawn independently from its own vocabulary, so the reachable
+    combinations are the product of the three rather than a fixed list of
+    triples. Stated preferences extend a vocabulary and get a bonus; they do
+    not replace it, because a single stated style would otherwise appear on
+    every image and remove style novelty entirely.
 
     Returns a dict with theme_family / style / palette keys.
     """
-    prefs = user_prefs or {}
+    history = feedback_history or []
 
     if sensitive_task:
-        pool = _SENSITIVE_THEMES
-        # Sensitive tasks ignore user style/palette prefs — the guardrail
-        # allowlist wins (docs/reward-system.md: Sensitive Task Guardrail).
-        styles: list[str] = []
-        palettes: list[str] = []
-    else:
-        pool = _THEME_POOLS.get(intensity, _THEME_POOLS["low"])
-        styles = list(prefs.get("preferred_styles") or [])
-        palettes = list(prefs.get("preferred_palettes") or [])
+        # The guardrail allowlist wins outright: fixed triples, no preferences,
+        # no feedback weighting, and — by returning here — no vocabulary
+        # lookup of any kind. Sensitive rewards cannot be steered.
+        chosen = random.choice(_SENSITIVE_THEMES)
+        return {
+            "theme_family": chosen["theme"],
+            "style": chosen["style"],
+            "palette": chosen["palette"],
+        }
 
-    candidates: list[dict[str, str]] = []
-    for theme in pool:
-        for style in styles or [theme["style"]]:
-            for palette in palettes or [theme["palette"]]:
-                candidates.append(
-                    {
-                        "theme_family": theme["theme"],
-                        "style": style,
-                        "palette": palette,
-                    }
-                )
+    prefs = user_prefs or {}
+    preferred_styles = _sanitized_list(prefs.get("preferred_styles"))
+    preferred_palettes = _sanitized_list(prefs.get("preferred_palettes"))
+    favorite_subjects = _sanitized_list(prefs.get("favorite_subjects"))
 
-    weights = [
-        apply_feedback_weight(
-            feedback_history or [],
-            theme_family=candidate["theme_family"],
-            style=candidate["style"],
-            palette=candidate["palette"],
-        )
-        for candidate in candidates
-    ]
+    themes = _SEED_THEMES.get(intensity, _SEED_THEMES["low"])
+    return {
+        "theme_family": _draw_attribute(
+            _extend(themes, favorite_subjects),
+            axis="theme_family",
+            feedback_history=history,
+            preferred=frozenset(favorite_subjects),
+        ),
+        "style": _draw_attribute(
+            _extend(_SEED_STYLES, preferred_styles),
+            axis="style",
+            feedback_history=history,
+            preferred=frozenset(preferred_styles),
+        ),
+        "palette": _draw_attribute(
+            _extend(_SEED_PALETTES, preferred_palettes),
+            axis="palette",
+            feedback_history=history,
+            preferred=frozenset(preferred_palettes),
+        ),
+    }
 
-    return random.choices(candidates, weights=weights, k=1)[0]
+
+def _extend(base: list[str], extra: list[str]) -> list[str]:
+    """Base vocabulary plus any stated values it does not already contain."""
+    return base + [value for value in extra if value not in base]
 
 
 def _build_image_prompt(
@@ -680,10 +928,11 @@ def apply_feedback_weight(
     style: str,
     palette: str,
 ) -> float:
-    """Compute a selection weight for a theme/style/palette based on feedback history.
+    """Combined feedback weight for a full theme/style/palette combination.
 
-    Implements bounded feedback weighting: reaction influence halves every 45
-    days, aggregate weights are capped, result is a nudge not a dictate.
+    The product of the three per-axis weights. Selection itself draws each axis
+    separately via _draw_attribute(); this is the whole-combination view, used
+    where a single number for a candidate image is wanted.
 
     Args:
         feedback_history: List of dicts with keys: score (int), theme_family (str),
@@ -693,55 +942,21 @@ def apply_feedback_weight(
         palette: Palette to compute weight for.
 
     Returns:
-        Weight float between 0.5 and 1.5. 1.0 is neutral.
-        >1.0 means positive bias, <1.0 means negative bias.
-        The total nudge is capped at +/-0.5, matching the bounded-feedback
-        contract in docs/reward-system.md: feedback biases selection but can
-        never eliminate a theme.
+        Weight float. 1.0 is neutral, >1.0 positive bias, <1.0 negative bias.
+        Bounded by the per-axis caps in _AXIS_NUDGE_CAP and therefore always
+        strictly positive: feedback biases selection and can never eliminate a
+        combination. The floor that actually guarantees novelty is the
+        _SELECTION_EPSILON mixture in _draw_attribute(), which bounds
+        probability rather than weight.
     """
     if not feedback_history:
         return 1.0
 
-    now = datetime.now(UTC)
-    total_nudge = 0.0
-
-    for entry in feedback_history:
-        score = entry.get("score", 0)
-        entry_theme = entry.get("theme_family", "")
-        entry_style = entry.get("style", "")
-        entry_palette = entry.get("palette", "")
-        entry_ts_str = entry.get("timestamp", "")
-
-        # Check relevance
-        match_weight = 0.0
-        if entry_theme == theme_family:
-            match_weight += 0.6
-        if entry_style == style:
-            match_weight += 0.3
-        if entry_palette == palette:
-            match_weight += 0.1
-
-        if match_weight == 0:
-            continue
-
-        # Time decay: influence halves every _FEEDBACK_HALF_LIFE_DAYS.
-        try:
-            entry_ts = datetime.fromisoformat(entry_ts_str.replace("Z", "+00:00"))
-            age_days = (now - entry_ts).total_seconds() / 86400.0
-        except (ValueError, TypeError, AttributeError):
-            # Unparseable timestamp: treat as maximally old rather than dropping
-            # it, so a malformed row degrades to negligible influence.
-            age_days = float(_FEEDBACK_WINDOW_DAYS)
-
-        decay = _feedback_decay(age_days)
-
-        # Contribution: score ∈ {-1, 0, 1} × match × decay
-        contribution = score * match_weight * decay
-        total_nudge += contribution
-
-    # Cap total nudge at ±0.5 (so weight stays in [0.5, 1.5])
-    total_nudge = max(-0.5, min(0.5, total_nudge))
-    return 1.0 + total_nudge
+    return (
+        _attribute_weight(feedback_history, axis="theme_family", value=theme_family)
+        * _attribute_weight(feedback_history, axis="style", value=style)
+        * _attribute_weight(feedback_history, axis="palette", value=palette)
+    )
 
 
 # ---------------------------------------------------------------------------
