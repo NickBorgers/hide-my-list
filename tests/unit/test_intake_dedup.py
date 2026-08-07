@@ -53,6 +53,48 @@ def test_shortlist_duplicate_candidates_unicode_and_punctuation_normalization() 
     assert [candidate.page_id for candidate in candidates] == ["<page_id_a>"]
 
 
+def test_query_stopwords_strip_the_query_side_only() -> None:
+    """Callers matching a whole message drop filler the title still needs.
+
+    "out" carries no signal in "knocked that out" and all of it in "Take out
+    the placeholder" — so it comes off the query and stays on the title.
+    """
+    tasks = [{"id": "<page_id_a>", "title": "Take out the placeholder"}]
+
+    without = shortlist_duplicate_candidates("Knocked out the placeholder", tasks)
+    with_stopwords = shortlist_duplicate_candidates(
+        "Knocked out the placeholder",
+        tasks,
+        query_stopwords=frozenset({"knocked", "out"}),
+    )
+
+    assert without[0].score > 0
+    # Dropping the filler leaves {placeholder} against {take, out, placeholder}.
+    assert with_stopwords[0].score == pytest.approx(0.5)
+
+
+def test_query_stopwords_can_empty_the_query() -> None:
+    """A message made entirely of filler shortlists nothing."""
+    assert (
+        shortlist_duplicate_candidates(
+            "knocked it out",
+            [{"id": "<page_id_a>", "title": "Take out the placeholder"}],
+            query_stopwords=frozenset({"knocked", "out"}),
+        )
+        == []
+    )
+
+
+def test_query_stopwords_default_to_empty() -> None:
+    """Intake passes no query stopwords; its scoring is unchanged."""
+    tasks = [{"id": "<page_id_a>", "title": "Take out the placeholder"}]
+    assert shortlist_duplicate_candidates("Take out the placeholder", tasks) == (
+        shortlist_duplicate_candidates(
+            "Take out the placeholder", tasks, query_stopwords=frozenset()
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_dedup_notion_error_fails_open_to_task_creation() -> None:
     page_id = str(uuid.uuid4())

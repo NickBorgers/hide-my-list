@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,44 +25,20 @@ from typing import Any, cast
 
 import structlog
 
+from app.graph.nodes._task_match import (
+    DedupCandidate,
+    open_non_reminder_tasks,
+    parse_match_response,
+    shortlist_duplicate_candidates,
+)
 from app.graph.state import OutboundDraft, State
 
 log = structlog.get_logger(__name__)
 
-_OPEN_TASK_STATUSES = {"Pending", "In Progress"}
+# Intake's own threshold. A false match here silently folds the user's new task
+# into an existing page, so the bar is high — but the reply names the matched
+# task, making a wrong call visible and correctable in the same turn.
 _DEDUP_CONFIDENCE_THRESHOLD = 0.85
-_DEDUP_MAX_CANDIDATES = 5
-_DEDUP_MIN_SCORE = 0.4
-_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "at",
-    "by",
-    "do",
-    "for",
-    "i",
-    "in",
-    "it",
-    "me",
-    "my",
-    "need",
-    "of",
-    "on",
-    "please",
-    "the",
-    "to",
-    "with",
-}
-
-
-@dataclass(frozen=True)
-class DedupCandidate:
-    """Shortlisted existing task that may describe the proposed task."""
-
-    page_id: str
-    title: str
-    score: float
 
 
 @dataclass(frozen=True)
@@ -353,7 +328,7 @@ async def _find_existing_task_match(proposed_title: str) -> DedupMatch | None:
         from app.tools import notion
 
         raw = await notion.query_all()
-        existing = _open_non_reminder_tasks(raw)
+        existing = open_non_reminder_tasks(raw)
         candidates = shortlist_duplicate_candidates(proposed_title, existing)
         if not candidates:
             return None
@@ -364,7 +339,7 @@ async def _find_existing_task_match(proposed_title: str) -> DedupMatch | None:
             SystemMessage(content=prompt),
             HumanMessage(content="Return only the JSON object."),
         ])
-        parsed = _parse_dedup_response(str(response.content), candidates)
+        parsed = parse_match_response(str(response.content), candidates)
         if parsed is None:
             return None
         page_id, confidence = parsed
@@ -378,73 +353,6 @@ async def _find_existing_task_match(proposed_title: str) -> DedupMatch | None:
     except Exception:
         log.exception("intake_node.dedup_failed")
         return None
-
-
-def shortlist_duplicate_candidates(
-    proposed_title: str,
-    existing_tasks: list[Mapping[str, str]],
-    *,
-    limit: int = _DEDUP_MAX_CANDIDATES,
-    min_score: float = _DEDUP_MIN_SCORE,
-) -> list[DedupCandidate]:
-    """Return likely duplicate candidates using token overlap only."""
-    proposed_tokens = _normalize_title_tokens(proposed_title)
-    if not proposed_tokens or not existing_tasks:
-        return []
-
-    candidates: list[DedupCandidate] = []
-    for task in existing_tasks:
-        page_id = task.get("id", "")
-        title = task.get("title", "")
-        if not page_id or not title:
-            continue
-        title_tokens = _normalize_title_tokens(title)
-        if not title_tokens:
-            continue
-        overlap = proposed_tokens & title_tokens
-        score = (2 * len(overlap)) / (len(proposed_tokens) + len(title_tokens))
-        if score >= min_score:
-            candidates.append(DedupCandidate(page_id=page_id, title=title, score=score))
-
-    return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)[:limit]
-
-
-def _normalize_title_tokens(title: str) -> set[str]:
-    """Normalize a task title into comparable non-stopword tokens."""
-    normalized = "".join(
-        " " if unicodedata.category(char).startswith("P") else char.casefold()
-        for char in title
-    )
-    tokens = set()
-    for raw_token in normalized.split():
-        token = raw_token.strip()
-        if len(token) < 2 or token in _STOPWORDS:
-            continue
-        tokens.add(token)
-    return tokens
-
-
-def _open_non_reminder_tasks(query_all_response: Mapping[str, Any]) -> list[Mapping[str, str]]:
-    """Extract open, non-reminder task ids and titles from a Notion query response."""
-    results = query_all_response.get("results", [])
-    if not isinstance(results, list):
-        return []
-    tasks: list[Mapping[str, str]] = []
-    for page in results:
-        if not isinstance(page, dict):
-            continue
-        props = page.get("properties", {})
-        if not isinstance(props, dict):
-            continue
-        status = _extract_select(props, "Status")
-        is_reminder = _extract_checkbox(props, "Is Reminder")
-        if status not in _OPEN_TASK_STATUSES or is_reminder:
-            continue
-        page_id = page.get("id", "")
-        title = _extract_title(props)
-        if isinstance(page_id, str) and page_id and title:
-            tasks.append({"id": page_id, "title": title})
-    return tasks
 
 
 def _build_dedup_prompt(proposed_title: str, candidates: list[DedupCandidate]) -> str:
@@ -462,73 +370,6 @@ def _build_dedup_prompt(proposed_title: str, candidates: list[DedupCandidate]) -
         "Return JSON only in this shape:\n"
         '{"matched_page_id": "<candidate id or null>", "confidence": 0.0}'
     )
-
-
-def _parse_dedup_response(
-    response_text: str,
-    candidates: list[DedupCandidate],
-) -> tuple[str, float] | None:
-    json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-    if not json_match:
-        return None
-    try:
-        loaded = json.loads(json_match.group())
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(loaded, dict):
-        return None
-    matched_page_id = loaded.get("matched_page_id")
-    confidence_raw = loaded.get("confidence")
-    if not isinstance(matched_page_id, str):
-        return None
-    if not isinstance(confidence_raw, int | float | str):
-        return None
-    try:
-        confidence = float(confidence_raw)
-    except ValueError:
-        return None
-    candidate_ids = {candidate.page_id for candidate in candidates}
-    if matched_page_id not in candidate_ids:
-        return None
-    return matched_page_id, confidence
-
-
-def _extract_title(props: dict[str, Any]) -> str:
-    """Extract the title string from a Notion page properties dict."""
-    title_prop = props.get("Title", {})
-    if not isinstance(title_prop, dict):
-        return ""
-    items = title_prop.get("title", [])
-    if not isinstance(items, list):
-        return ""
-    parts: list[str] = []
-    for item in items:
-        if isinstance(item, dict):
-            plain_text = item.get("plain_text", "")
-            if isinstance(plain_text, str):
-                parts.append(plain_text)
-    return "".join(parts)
-
-
-def _extract_select(props: dict[str, Any], key: str) -> str:
-    """Extract a select property value."""
-    prop = props.get(key, {})
-    if not isinstance(prop, dict):
-        return ""
-    sel = prop.get("select") or {}
-    if not isinstance(sel, dict):
-        return ""
-    name = sel.get("name", "")
-    return name if isinstance(name, str) else ""
-
-
-def _extract_checkbox(props: dict[str, Any], key: str) -> bool:
-    """Extract a checkbox property value."""
-    prop = props.get(key, {})
-    if not isinstance(prop, dict):
-        return False
-    value = prop.get("checkbox", False)
-    return bool(value)
 
 
 async def _handle_parse_failure(*, peer: str, incoming: str) -> dict[str, Any]:

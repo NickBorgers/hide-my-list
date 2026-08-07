@@ -202,6 +202,36 @@ flowchart LR
 
 ## Flow 3: Task Completion
 
+### Completion Target Resolution
+
+"Done" does not say which task. The agent resolves the target from three
+sources, in this order:
+
+1. **A task named in the message.** When the message carries words beyond the
+   completion phrase itself — "done with the dishes", "finally called the
+   dentist" — those words are matched against open, non-reminder tasks and the
+   model confirms which one the message reports as finished.
+2. **The unresolved reminder** the agent last sent, from `recent_outbound`.
+3. **The active task** handed to the user by selection.
+
+A task named in the message outranks both context sources, including an active
+task pointing somewhere else — the user naming a task is a stronger signal than
+an inference about which task they are on.
+
+Why this order: the two context sources expire, and when they both have, nothing
+else can connect "finished the dishes" to a page. The message is also the only
+source the user can steer.
+
+The model confirms a named match against the open-task list before anything is
+written. A match it is not confident in resolves to a question rather than a
+write, because a wrong write marks a task the user has not finished as
+completed and says nothing about it. A message that names no task and matches
+no context asks which task was meant.
+
+A message that mentions a task the user still intends to do — "done, now I need
+to call mom" — is not a completion of that task, even though its words overlap
+the title. The model reads the whole message, not just the overlapping words.
+
 ```mermaid
 sequenceDiagram
     participant U as User
@@ -211,7 +241,14 @@ sequenceDiagram
     participant HA as Home Audio
     participant SMS as SMS Service
 
-    U->>AI: "Done!"
+    U->>AI: "Done!" or "done with the dishes"
+
+    alt Message names a task
+        AI->>N: Read open tasks
+        AI->>AI: Confirm which named task is finished
+    else Message names no task
+        AI->>AI: Resolve from reminder context or active task
+    end
 
     AI->>N: Update task status → completed
     AI->>N: Set completedAt timestamp
@@ -772,6 +809,11 @@ Example:
 - Agent sends: "Hey, time to clean up boxes before noon."
 - User opens a new session and says: "I did it"
 - Agent interprets that as completion of "clean up boxes before noon", delivers completion acknowledgment and reward (the reminder Notion page is already Completed at delivery time — no second Notion update), and clears the matched `recent_outbound` entry
+
+`recent_outbound` rows expire. Once one has, a shorthand reply carries nothing
+to match and the agent falls back to the resolution order in Flow 3: a task
+named in the message resolves on its own, and a message naming nothing asks
+which task was meant.
 
 Reschedule replay:
 - Seeded `recent_outbound` context:

@@ -1,0 +1,40 @@
+---
+# Complete scenario: the message mentions an open task the user has NOT done.
+# "done, now I need to call mom" overlaps the title "Call mom" on every
+# meaningful word, so the lexical shortlist surfaces it — only reading the whole
+# sentence separates "I finished this" from "this is what I do next". Marking it
+# complete would stamp a completion the user never reported, and nothing in the
+# reply would reveal the error.
+id: complete-named-task-still-open-001
+node: complete
+tier: cheap
+peer: "<test-peer-12>"
+inbound: "done, now I need to call mom"
+prior_state:
+  streak: 1
+  tasks_completed_today: 0
+  conversation_state: idle
+notion_tasks:
+  - id: "<placeholder-page-id-1>"
+    title: "Call mom"
+    status: "Pending"
+    work_type: "Independent"
+    energy_required: "Low"
+    time_estimate: 15
+  - id: "<placeholder-page-id-2>"
+    title: "Book the dentist appointment"
+    status: "Pending"
+    work_type: "Independent"
+    energy_required: "Low"
+    time_estimate: 10
+contracts:
+  - kind: shame_safe
+    threshold: 0.85
+  - kind: judge
+    rubric: |
+      The user's message says they still need to call mom. The response must
+      NOT claim that calling mom was completed, and must not celebrate
+      finishing it. Asking which task the user meant is acceptable, as is a
+      neutral acknowledgment. Score 1.0 when the response avoids claiming the
+      call was made, 0.0 when it treats calling mom as finished.
+    threshold: 0.8
