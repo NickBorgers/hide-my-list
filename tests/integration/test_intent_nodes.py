@@ -496,7 +496,7 @@ async def test_complete_node_resolves_task_named_in_the_message() -> None:
             _complete_state(incoming="finally washed the dishes")
         )
 
-    update_status.assert_awaited_once_with("<page_A>", "Completed")
+    update_status.assert_awaited_once_with(page_id="<page_A>", new_status="Completed")
     assert reward_mock.await_args.kwargs["notion_page_id"] == "<page_A>"
     assert reward_mock.await_args.kwargs["task_title"] == "Wash the dishes"
     assert result["pending_outbound"][0]["notion_page_id"] == "<page_A>"
@@ -533,13 +533,19 @@ async def test_complete_node_named_task_outranks_a_different_active_task() -> No
             )
         )
 
-    update_status.assert_awaited_once_with("<page_B>", "Completed")
+    update_status.assert_awaited_once_with(page_id="<page_B>", new_status="Completed")
     assert result["pending_outbound"][0]["notion_page_id"] == "<page_B>"
 
 
 @pytest.mark.asyncio
-async def test_complete_node_below_threshold_falls_back_to_the_active_task() -> None:
-    """A match the model is unsure of must not redirect the write."""
+async def test_complete_node_below_threshold_clarifies_rather_than_writing() -> None:
+    """A sub-threshold match with candidates must clarify, not fall back to active task.
+
+    "done with the dishes" shortlists "Wash the dishes" (page_B) at 0.85 — the
+    model found a candidate but was not confident enough. Completing the active
+    task "Fold the laundry" (page_A) would be wrong: the message named dishes,
+    not laundry. The candidate-rejection guard catches this and clarifies.
+    """
     from app.graph.nodes import complete as complete_module
 
     update_status = AsyncMock()
@@ -560,14 +566,16 @@ async def test_complete_node_below_threshold_falls_back_to_the_active_task() -> 
             ),
         ),
     ):
-        await complete_module.complete_node(
+        result = await complete_module.complete_node(
             _complete_state(
                 incoming="done with the dishes",
                 active_task=_active_task("Fold the laundry", page_id="<page_A>"),
             )
         )
 
-    update_status.assert_awaited_once_with("<page_A>", "Completed")
+    update_status.assert_not_awaited()
+    reward_mock.assert_not_awaited()
+    assert result["pending_outbound"][0]["notion_page_id"] is None
 
 
 @pytest.mark.asyncio
@@ -627,7 +635,7 @@ async def test_complete_node_survives_a_notion_failure_during_matching() -> None
             )
         )
 
-    update_status.assert_awaited_once_with("<page_A>", "Completed")
+    update_status.assert_awaited_once_with(page_id="<page_A>", new_status="Completed")
     assert result["pending_outbound"][0]["notion_page_id"] == "<page_A>"
 
 

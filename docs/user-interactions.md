@@ -211,16 +211,21 @@ sources, in this order:
    completion phrase itself — "done with the dishes", "finally called the
    dentist" — those words are matched against open, non-reminder tasks and the
    model confirms which one the message reports as finished.
-2. **The unresolved reminder** the agent last sent, from `recent_outbound`.
-3. **The active task** handed to the user by selection.
+2. **The most recent context source** — whichever is newer between the
+   unresolved reminder the agent last sent (from `recent_outbound`) and the
+   active task handed to the user by selection. If only one exists, it is used
+   directly.
+3. **Clarification** — if no source resolves, the agent asks which task was
+   meant.
 
 A task named in the message outranks both context sources, including an active
 task pointing somewhere else — the user naming a task is a stronger signal than
 an inference about which task they are on.
 
-Why this order: the two context sources expire, and when they both have, nothing
+Why this design: the two context sources expire, and when they both have, nothing
 else can connect "finished the dishes" to a page. The message is also the only
-source the user can steer.
+source the user can steer. When both context sources are live, the more recent
+one is more likely to reflect the user's current work.
 
 The model confirms a named match against the open-task list before anything is
 written. A match it is not confident in resolves to a question rather than a

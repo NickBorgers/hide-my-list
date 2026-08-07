@@ -405,7 +405,7 @@ async def complete_node(state: State) -> dict[str, Any]:
         # Only look the message up when it names something. "done!" resolves
         # from context alone and must not pay for a Notion read or a model call.
         residue = _task_reference_tokens(state.get("incoming") or "")
-        if residue and not _agrees_with_active_task(residue, active_target):
+        if residue:
             title_match = await _resolve_title_match(
                 state.get("incoming") or "", residue, now=now
             )
@@ -417,6 +417,12 @@ async def complete_node(state: State) -> dict[str, Any]:
             recent_target=recent_target,
             title_target=title_match.target,
         )
+
+        # When the message appeared to name a task (candidates were found) but
+        # the model rejected all of them, the message asserts something is NOT
+        # done — completing from stale context would mark the wrong page.
+        if target and residue and title_match.candidate_count > 0 and title_match.target is None:
+            return _clarify_completion_target(peer)
 
         # Ids and counts only — the residue tokens and task titles are the
         # user's own words and stay out of the logs.
@@ -439,7 +445,7 @@ async def complete_node(state: State) -> dict[str, Any]:
         task_title = target.task_title
 
         if target.needs_notion_write:
-            await notion.update_status(page_id, "Completed")
+            await notion.update_status(page_id=page_id, new_status="Completed")
 
         streak = state.get("streak", 0) + 1
         tasks_today = state.get("tasks_completed_today", 0) + 1

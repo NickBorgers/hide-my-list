@@ -32,12 +32,11 @@ def _assert_write_kwargs_shape(update_status: AsyncMock, page_id: str) -> None:
     Bug class 10: silent degradation behind intentional exception-swallowing.
     """
     update_status.assert_awaited_once()
-    bound = inspect.signature(notion.update_status).bind(
-        *update_status.await_args.args, **update_status.await_args.kwargs
-    )
-    bound.apply_defaults()
-    assert bound.arguments["page_id"] == page_id
-    assert bound.arguments["new_status"] == "Completed"
+    kwargs = update_status.await_args.kwargs
+    sig_params = set(inspect.signature(notion.update_status).parameters)
+    assert {"page_id", "new_status"} <= sig_params
+    assert kwargs.get("page_id") == page_id
+    assert kwargs.get("new_status") == "Completed"
 
 
 def _assert_reward_kwargs_shape(reward_mock: AsyncMock, page_id: str) -> None:
@@ -283,3 +282,43 @@ async def test_a_bare_completion_reads_neither_notion_nor_the_model() -> None:
 
     query_all.assert_not_awaited()
     llm_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_active_task_overlap_does_not_complete_when_message_says_still_pending() -> None:
+    """Active task overlaps message residue but the user says the task is NOT done.
+
+    "done, now I need to call mom" with active task "Call mom": the shortlist
+    finds the active page as a candidate, the model returns null, and the
+    candidate-rejection guard must prevent the active task from completing via
+    the context path.
+    """
+    update_status = AsyncMock()
+    reward_mock = AsyncMock(return_value={"text": "Nice work!", "attachment_path": None})
+    query_all = AsyncMock(return_value={"results": [_notion_page("<page_A>", "Call mom")]})
+    live_active = {
+        "page_id": "<page_A>",
+        "title": "Call mom",
+        "selected_at": datetime.now(UTC).isoformat(),
+        "work_type": "Social",
+        "energy_required": "Medium",
+    }
+
+    with (
+        patch("app.tools.notion.update_status", update_status),
+        patch("app.tools.notion.query_all", query_all),
+        patch("app.tools.rewards.maybe_reward", reward_mock),
+        patch.object(
+            complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)
+        ),
+        patch("app.models.llm", return_value=_model(
+            json.dumps({"matched_page_id": None, "confidence": 0.0})
+        )),
+    ):
+        result = await complete_module.complete_node(
+            _state("done, now I need to call mom", live_active)
+        )
+
+    update_status.assert_not_awaited()
+    reward_mock.assert_not_awaited()
+    assert result["pending_outbound"][0]["notion_page_id"] is None
