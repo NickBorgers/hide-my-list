@@ -369,7 +369,7 @@ Supported preference dimensions:
 
 The lookup fails open: a missing row, a missing or wrongly-typed `rewards` subtree, or a database error all yield an empty profile and neutral generation. A preferences failure never blocks a reward.
 
-**Input constraint:** preference values are intended as visual descriptors — art styles, palettes, and subject categories — and must not contain personal detail. `preferred_styles` and `preferred_palettes` are persisted verbatim onto `reward_manifests` as `style` and `palette` when an image is generated. These strings originate from user-supplied preference text with no runtime allowlist enforcement; treat `style` and `palette` manifest columns as user-provided text that may not be free of personal detail in ops queries.
+**Input constraint:** preference values are intended as visual descriptors — art styles, palettes, and subject categories — and must not contain personal detail. `preferred_styles`, `preferred_palettes`, and `favorite_subjects` are sanitized by `_sanitize_descriptor` before entering selection vocabularies; rejected values are dropped silently. `style` and `palette` on `reward_manifests` store the selected sanitized vocabulary member, not raw preference text. See **Descriptors are untrusted input** below for the full sanitizer contract.
 
 #### Streak Enhancements
 
@@ -423,6 +423,7 @@ For one descriptor on one axis, ratings that name that descriptor accumulate int
 - Ratings scoring `0` (unknown emoji) are recorded as acknowledgment and contribute to neither count.
 - The counts combine into a Beta-smoothed success rate, scaled by how much evidence exists. With no ratings the weight is exactly `1.0`.
 - The result is bounded by a per-axis cap: theme `±0.25`, style `±0.50`, palette `±0.50`.
+
 
 The decay curve has no hard cutoff inside the window, so the load window is the only place a rating stops counting. Both numbers live in `app/tools/rewards.py` as `_FEEDBACK_WINDOW_DAYS` and `_FEEDBACK_HALF_LIFE_DAYS`, and the load window feeds `load_feedback_history`'s default so the two cannot drift apart.
 

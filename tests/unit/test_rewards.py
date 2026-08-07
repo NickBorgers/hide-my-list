@@ -669,7 +669,6 @@ class TestDescriptorSanitization:
         assert "passport" not in prompt
         assert "\n" not in prompt
 
-
 class TestFeedbackWeightedSelection:
     """Emoji reactions must actually steer future image selection.
 
