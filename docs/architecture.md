@@ -178,4 +178,4 @@ For the infra operator / VM-isolation configuration:
 ## CI/CD
 
 See `docs/agentic-pipeline-learnings.md` for the multi-agent review pipeline.
-Python source changes trigger `python-validation.yml` (ruff + mypy + pytest-unit).
+Python source changes trigger `python-validation.yml` (ruff + mypy + pytest-unit + pytest-db); pytest-db runs integration and regression suites against a Postgres service container.

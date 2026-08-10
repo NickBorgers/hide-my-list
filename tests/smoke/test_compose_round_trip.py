@@ -130,9 +130,12 @@ def test_postgres_migrations_applied(compose_stack: object) -> None:
     result = subprocess.run(  # noqa: S603
         ["docker", "compose", "-f", str(_COMPOSE_FILE), "run", "--rm",
          "-e", "DATABASE_URL=postgresql://hml:hml@postgres:5432/hml",
+         # run_migrations is synchronous — it is called at startup before the
+         # event loop exists. Wrapping it in asyncio.run() passes None to the
+         # loop and raises TypeError after the migrations have already applied,
+         # which fails this check for a reason unrelated to the migrations.
          "app", "python", "-c",
-         "import asyncio; from app.tools.db import run_migrations; "
-         "asyncio.run(run_migrations())"],
+         "from app.tools.db import run_migrations; run_migrations()"],
         capture_output=True,
         text=True,
         timeout=60,
