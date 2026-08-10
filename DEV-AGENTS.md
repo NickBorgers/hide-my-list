@@ -96,7 +96,7 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `tests/smoke/` — Full compose stack smoke test; gated by `ENABLE_COMPOSE_SMOKE=true`
 - `docs/python-rewrite/` — Python stack contributor docs and runbooks
 - `docs/python-rewrite/langgraph-semantics.md` — LangGraph durability spike findings
-- `docs/python-rewrite/test-rig.md` — Authoritative test rig architecture spec: layer table, 8 bug classes, regression catalog convention, eval fixture format, integration mock discipline, LLM swap mechanism
+- `docs/python-rewrite/test-rig.md` — Authoritative test rig architecture spec: layer table, 10 bug classes, regression catalog convention, eval fixture format, integration mock discipline, LLM swap mechanism
 - `docker/backup.sh` — Postgres pg_dump wrapper with retention policy
 - `docker/Dockerfile` — Multi-stage Python 3.12-slim image for the app service
 - `docker/compose.yaml` — Compose spec: `app` + `signal-cli` + `postgres:16-alpine`

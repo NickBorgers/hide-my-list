@@ -66,7 +66,7 @@ Each bug class leaves a permanent test. Fix -> regression test ->
 ## Structural Lints (unit speed, always runs)
 
 Six lints in `tests/unit/` that run without LLM or Postgres. Five catch five
-of the nine bug classes directly; one ensures the pre-commit Python gate stays
+of the ten bug classes directly; one ensures the pre-commit Python gate stays
 wired.
 
 ### `test_migration_filenames.py`
