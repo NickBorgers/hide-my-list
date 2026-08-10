@@ -898,6 +898,57 @@ async def load_feedback_history(
         return []
 
 
+async def load_reward_prefs(peer: str) -> dict[str, Any]:
+    """Load the peer's reward-image taste profile from Postgres.
+
+    Reads `user_prefs.prefs_json -> 'rewards'` (docs/user-preferences.md:
+    Reward Preferences). Returns {} when the peer has no row, has no rewards
+    subtree, or when the subtree is not a JSON object.
+
+    Read from Postgres here rather than threaded through LangGraph State on
+    purpose: State is the checkpoint unit, so a preferences copy living there
+    would be persisted per thread and drift from the table on every edit.
+    maybe_reward() already owns one peer-keyed fail-open read
+    (load_feedback_history); this is the same shape and adds no new failure
+    mode.
+
+    Returns {} on DB failure so reward delivery proceeds with neutral
+    generation rather than being blocked by a preferences lookup.
+
+    Privacy: peer is a DB filter key only. Preference contents are never
+    logged — they are user-authored free text.
+    """
+    from app.tools.db import get_db_conn
+
+    try:
+        async with get_db_conn() as conn:
+            cur = await conn.execute(
+                "SELECT prefs_json FROM user_prefs WHERE peer = %s",
+                (peer,),
+            )
+            row = await cur.fetchone()
+
+        if row is None:
+            return {}
+
+        prefs_json = row["prefs_json"]
+        if not isinstance(prefs_json, dict):
+            # Column is NOT NULL DEFAULT '{}', but a scalar or array JSON value
+            # would still satisfy jsonb. Treat anything non-object as absent.
+            return {}
+
+        rewards = prefs_json.get("rewards")
+        if not isinstance(rewards, dict):
+            return {}
+
+        return rewards
+
+    except Exception:
+        # Count-free, content-free: the failure is what matters, not the value.
+        log.warning("load_reward_prefs.failed")
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Manifest writing
 # docs/reward-system.md: Feedback Loop section
@@ -1009,7 +1060,8 @@ async def maybe_reward(
         is_parent_complete: True if all sub-tasks of a parent are done.
         is_all_cleared: True if all tasks cleared.
         rewards_in_last_hour: Recent reward count for diminishing returns.
-        user_prefs: Optional user reward preferences.
+        user_prefs: Optional user preferences. When omitted, the peer's stored
+            taste profile is loaded from Postgres via load_reward_prefs().
 
     Returns:
         RewardResult with text (celebration message) and attachment_path (PNG
@@ -1035,7 +1087,20 @@ async def maybe_reward(
     # Attempt image generation
     image: ImageGeneration | None = None
     if intensity_label != "lightest" and not sensitive:
-        prefs = (user_prefs or {}).get("rewards") if user_prefs else None
+        # An explicit user_prefs argument wins; otherwise fall back to the
+        # stored taste profile. Callers in the graph do not carry preferences,
+        # so in production this is the path that runs.
+        prefs: dict[str, Any] | None
+        if user_prefs is not None:
+            prefs = user_prefs.get("rewards")
+        else:
+            try:
+                prefs = await load_reward_prefs(peer)
+            except Exception:
+                # load_reward_prefs already fails open; this guards the call
+                # itself so a preferences lookup can never block a reward.
+                log.warning("maybe_reward.reward_prefs_failed")
+                prefs = None
         try:
             feedback_history = await load_feedback_history(peer)
         except Exception:

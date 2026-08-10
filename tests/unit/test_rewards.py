@@ -850,6 +850,192 @@ class TestRewardFeedback:
         ]
 
     @pytest.mark.asyncio
+    async def test_load_reward_prefs_returns_the_rewards_subtree(self) -> None:
+        """load_reward_prefs unwraps prefs_json -> 'rewards'."""
+        from app.tools import rewards as rewards_module
+
+        rows = [
+            {
+                "prefs_json": {
+                    "timezone": "America/Chicago",
+                    "rewards": {"preferred_styles": ["placeholder style"]},
+                }
+            }
+        ]
+        mock_conn = MagicMock()
+        mock_conn.execute = AsyncMock(return_value=_FakeCursor(rows))
+
+        @asynccontextmanager
+        async def fake_get_db_conn() -> AsyncGenerator[MagicMock, None]:
+            yield mock_conn
+
+        with patch("app.tools.db.get_db_conn", fake_get_db_conn):
+            result = await rewards_module.load_reward_prefs("<test-peer-16>")
+
+        assert result == {"preferred_styles": ["placeholder style"]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            pytest.param([], id="no-row-for-peer"),
+            pytest.param([{"prefs_json": {}}], id="no-rewards-subtree"),
+            pytest.param([{"prefs_json": {"rewards": ["a", "b"]}}], id="rewards-is-array"),
+            pytest.param([{"prefs_json": {"rewards": "text"}}], id="rewards-is-scalar"),
+            pytest.param([{"prefs_json": ["not", "an", "object"]}], id="prefs-json-is-array"),
+        ],
+    )
+    async def test_load_reward_prefs_degrades_to_empty(self, rows: list[dict[str, Any]]) -> None:
+        """Absent or wrongly-shaped preferences return {} rather than raising.
+
+        jsonb accepts scalars and arrays, so the column type does not
+        guarantee the shape the reward path expects.
+        """
+        from app.tools import rewards as rewards_module
+
+        mock_conn = MagicMock()
+        mock_conn.execute = AsyncMock(return_value=_FakeCursor(rows))
+
+        @asynccontextmanager
+        async def fake_get_db_conn() -> AsyncGenerator[MagicMock, None]:
+            yield mock_conn
+
+        with patch("app.tools.db.get_db_conn", fake_get_db_conn):
+            assert await rewards_module.load_reward_prefs("<test-peer-17>") == {}
+
+    @pytest.mark.asyncio
+    async def test_load_reward_prefs_fails_open_on_db_error(self) -> None:
+        """A preferences lookup failure returns {} instead of propagating."""
+        from app.tools import rewards as rewards_module
+
+        @asynccontextmanager
+        async def crashing_get_db_conn() -> AsyncGenerator[MagicMock, None]:
+            raise RuntimeError("DB unavailable")
+            yield MagicMock()  # pragma: no cover
+
+        with patch("app.tools.db.get_db_conn", crashing_get_db_conn):
+            assert await rewards_module.load_reward_prefs("<test-peer-18>") == {}
+
+    @pytest.mark.asyncio
+    async def test_maybe_reward_loads_stored_prefs_when_none_passed(self) -> None:
+        """The graph never passes preferences, so maybe_reward must fetch them.
+
+        Regression: complete_node calls maybe_reward without user_prefs and
+        nothing read the user_prefs table, so a stored taste profile could
+        never reach image generation.
+        """
+        from app.tools import rewards as rewards_module
+
+        stored = {"preferred_styles": ["placeholder style"]}
+        prefs_mock = AsyncMock(return_value=stored)
+        image_mock = AsyncMock(return_value=_fake_image())
+
+        with (
+            patch.object(rewards_module, "load_reward_prefs", new=prefs_mock),
+            patch.object(rewards_module, "load_feedback_history", new=AsyncMock(return_value=[])),
+            patch.object(rewards_module, "generate_reward_image", new=image_mock),
+            patch.object(rewards_module, "write_reward_manifest", new=AsyncMock(return_value=uuid.uuid4())),
+            patch.object(rewards_module, "compute_intensity", return_value=("high", 70)),
+        ):
+            await rewards_module.maybe_reward(
+                peer="<test-peer-19>",
+                task_title="Placeholder task title",
+                notion_page_id="<page-id-019>",
+                streak=3,
+                energy_required="High",
+                time_estimate=45,
+            )
+
+        prefs_mock.assert_awaited_once_with("<test-peer-19>")
+        assert image_mock.await_args.kwargs["user_prefs"] == stored
+
+    @pytest.mark.asyncio
+    async def test_explicit_user_prefs_argument_wins_over_stored(self) -> None:
+        """An explicit argument short-circuits the lookup entirely."""
+        from app.tools import rewards as rewards_module
+
+        prefs_mock = AsyncMock(return_value={"preferred_styles": ["stored style"]})
+        image_mock = AsyncMock(return_value=_fake_image())
+
+        with (
+            patch.object(rewards_module, "load_reward_prefs", new=prefs_mock),
+            patch.object(rewards_module, "load_feedback_history", new=AsyncMock(return_value=[])),
+            patch.object(rewards_module, "generate_reward_image", new=image_mock),
+            patch.object(rewards_module, "write_reward_manifest", new=AsyncMock(return_value=uuid.uuid4())),
+            patch.object(rewards_module, "compute_intensity", return_value=("high", 70)),
+        ):
+            await rewards_module.maybe_reward(
+                peer="<test-peer-20>",
+                task_title="Placeholder task title",
+                notion_page_id="<page-id-020>",
+                streak=3,
+                energy_required="High",
+                time_estimate=45,
+                user_prefs={"rewards": {"preferred_styles": ["explicit style"]}},
+            )
+
+        prefs_mock.assert_not_awaited()
+        assert image_mock.await_args.kwargs["user_prefs"] == {
+            "preferred_styles": ["explicit style"]
+        }
+
+    @pytest.mark.asyncio
+    async def test_explicit_empty_user_prefs_wins_over_stored(self) -> None:
+        """An explicit empty dict short-circuits the lookup — {} is a valid override."""
+        from app.tools import rewards as rewards_module
+
+        prefs_mock = AsyncMock(return_value={"preferred_styles": ["stored style"]})
+        image_mock = AsyncMock(return_value=_fake_image())
+
+        with (
+            patch.object(rewards_module, "load_reward_prefs", new=prefs_mock),
+            patch.object(rewards_module, "load_feedback_history", new=AsyncMock(return_value=[])),
+            patch.object(rewards_module, "generate_reward_image", new=image_mock),
+            patch.object(rewards_module, "write_reward_manifest", new=AsyncMock(return_value=uuid.uuid4())),
+            patch.object(rewards_module, "compute_intensity", return_value=("high", 70)),
+        ):
+            await rewards_module.maybe_reward(
+                peer="<test-peer-20b>",
+                task_title="Placeholder task title",
+                notion_page_id="<page-id-020b>",
+                streak=3,
+                energy_required="High",
+                time_estimate=45,
+                user_prefs={},
+            )
+
+        prefs_mock.assert_not_awaited()
+        assert image_mock.await_args.kwargs["user_prefs"] is None
+
+    @pytest.mark.asyncio
+    async def test_maybe_reward_continues_if_prefs_lookup_raises(self) -> None:
+        """A preferences failure must not block reward delivery."""
+        from app.tools import rewards as rewards_module
+
+        async def crashing_prefs(_peer: str) -> dict[str, Any]:
+            raise RuntimeError("DB unavailable")
+
+        image_mock = AsyncMock(return_value=_fake_image())
+
+        with (
+            patch.object(rewards_module, "load_reward_prefs", new=crashing_prefs),
+            patch.object(rewards_module, "load_feedback_history", new=AsyncMock(return_value=[])),
+            patch.object(rewards_module, "generate_reward_image", new=image_mock),
+            patch.object(rewards_module, "write_reward_manifest", new=AsyncMock(return_value=uuid.uuid4())),
+            patch.object(rewards_module, "compute_intensity", return_value=("high", 70)),
+        ):
+            result = await rewards_module.maybe_reward(
+                peer="<test-peer-21>",
+                task_title="Placeholder task title",
+                notion_page_id="<page-id-021>",
+                streak=3,
+                energy_required="High",
+                time_estimate=45,
+            )
+
+        assert result["attachment_path"] == "/tmp/reward_artifacts/test-image.png"
+
+    @pytest.mark.asyncio
     async def test_maybe_reward_passes_feedback_history_to_image_generation(self) -> None:
         """maybe_reward loads peer feedback and forwards it into image generation."""
         from app.tools import rewards as rewards_module

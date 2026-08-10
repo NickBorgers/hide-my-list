@@ -135,7 +135,7 @@ Preferences that shape celebration imagery after completions.
 |------------|----------------|-------|
 | preferred_styles | storybook watercolor, digital illustration, gouache poster art | Bias image rendering style |
 | preferred_palettes | aurora jewel tones, cozy pastel glow | Bias color treatment |
-| favorite_subjects | space, cats, nature, abstract | Bias theme family + subject matter |
+| favorite_subjects | space, cats, nature, abstract | Bias theme family + subject matter (deferred; stored but not yet read by runtime) |
 | avoid | spiders, medical literal, neon | Downweight imagery user dislikes |
 | humor_level | subtle, playful, maximal | Controls how whimsical rewards feel |
 
@@ -233,7 +233,7 @@ erDiagram
 }
 ```
 
-This subtree maps directly to `user_prefs.rewards` in Postgres and is the same reward-image preference object referenced by `docs/reward-system.md`.
+This object is stored under the `rewards` key in `user_prefs.prefs_json` (Postgres JSONB) and is the same reward-image preference object referenced by `docs/reward-system.md`. `favorite_subjects` is accepted in storage but not yet read by runtime code.
 
 ---
 
