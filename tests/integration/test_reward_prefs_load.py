@@ -197,10 +197,13 @@ async def test_maybe_reward_uses_stored_prefs_without_mock(clean_prefs: Any) -> 
 
     image_mock = AsyncMock(
         return_value={
-            "path": "/tmp/reward_artifacts/placeholder.png",
-            "theme_family": "placeholder",
-            "style": "placeholder e2e style",
-            "palette": "placeholder e2e palette",
+            "image": {
+                "path": "/tmp/reward_artifacts/placeholder.png",
+                "theme_family": "placeholder",
+                "style": "placeholder e2e style",
+                "palette": "placeholder e2e palette",
+            },
+            "failure_reason": None,
         }
     )
 

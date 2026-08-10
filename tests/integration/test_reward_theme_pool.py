@@ -290,10 +290,13 @@ async def test_maybe_reward_seeds_and_records_use_in_db(clean_pool_flow: Any) ->
     from app.tools.rewards import _SEED_PALETTES, _SEED_STYLES, _SEED_THEMES
 
     fake_image = {
-        "path": "/tmp/reward_artifacts/test-flow.png",
-        "theme_family": _SEED_THEMES["low"][0],
-        "style": _SEED_STYLES[0],
-        "palette": _SEED_PALETTES[0],
+        "image": {
+            "path": "/tmp/reward_artifacts/test-flow.png",
+            "theme_family": _SEED_THEMES["low"][0],
+            "style": _SEED_STYLES[0],
+            "palette": _SEED_PALETTES[0],
+        },
+        "failure_reason": None,
     }
 
     with (

@@ -220,7 +220,7 @@ flowchart TD
     end
 
     subgraph Generation["Image Generation"]
-        Analyze[Analyze Task + Sensitivity]
+        Analyze[Classify Task Motif + Sensitivity]
         Prefs[Load Reward Preferences + Feedback]
         Theme[Select Weighted Theme]
         Prompt[Build Personalized Prompt]
@@ -252,6 +252,7 @@ await rewards.generate_reward_image(
     intensity="medium",
     streak_count=2,
     task_descriptions=["Review proposal", "Clean desk"],
+    motif="cleanup",  # optional; from classify_task_motif()
     work_type="focus",  # optional
     energy_level="low",  # optional
 )
@@ -259,25 +260,24 @@ await rewards.generate_reward_image(
 
 The function validates its reward inputs before generation:
 
-- `streak_count` must be the positive, post-completion current streak length.
-- Task descriptions are private input — classified for metadata purposes, never embedded verbatim in the image prompt.
-- Blank or missing task descriptions are tolerated and do not abort image generation; the prompt falls back to generic progress imagery driven by intensity and theme selection alone.
+- `streak_count` is the positive, post-completion current streak length. It drives the progress-marker count in the prompt and is clamped there.
+- Task descriptions are private input — never embedded in the prompt and never logged. What connects the image to the task is `motif`, a label the caller obtains from `classify_task_motif()`.
+- Blank or missing task descriptions are tolerated and do not abort image generation; without a usable title there is no motif, and the prompt falls back to generic progress imagery driven by intensity and theme selection alone.
 
-Callers build the task-description list from the current completion session,
-ordered oldest to newest after the completed task has been counted. The list
-resets whenever the completion streak resets. If prior streak history is not
-available, callers must not invent descriptions or marker counts; they should
-start a fresh one-item streak list with the current completed task.
+Classification is the caller's job, not this function's: `generate_reward_image()` makes no LLM calls, so one classification is shared between the image prompt and the manifest row.
+
+Callers pass the current completed task's description. There is no count relationship between descriptions and `streak_count` — descriptions never reach the prompt, so holding only the current task while reporting a longer streak is correct.
 
 Output: `app/tools/rewards.py` generates a PNG, stores it in the reward artifacts volume, writes a manifest row in Postgres, and surfaces the path in `RewardResult.attachment_path`. The COMPLETE node populates `OutboundDraft.attachment_path`, and the send node delivers the image as a Signal attachment via `signal_client.send_message(attachment_paths=[...])`. Only PNG files under the `REWARD_ARTIFACTS_DIR` root are accepted (PNG-only content-type policy).
 
 #### Prompt Personalization Pipeline
 
-Reward prompts are built from three layers:
+Reward prompts are built from four layers:
 
 1. **Independent descriptor axes** — theme-family, style, and palette are drawn separately. Theme comes from the pool for the intensity (low/medium/high/epic), which is what carries celebration scale. Style and palette come from single vocabularies shared across all intensities
-2. **Preference modifiers** — optional `user_prefs.rewards` values (Postgres) extend the vocabularies and are favored within them, biasing style, palette, and subject matter
-3. **Feedback weighting** — prior positive/negative reactions bias future selection on each axis independently
+2. **Task motif** — the completed task is classified into one label from a fixed motif vocabulary; the label favors theme descriptors that suit it and contributes one scene line to the prompt
+3. **Preference modifiers** — optional `user_prefs.rewards` values (Postgres) extend the vocabularies and are favored within them, biasing style, palette, and subject matter
+4. **Feedback weighting** — prior positive/negative reactions bias future selection on each axis independently
 
 **Why the axes are independent:** welding theme, style, and palette into fixed triples makes both the reachable image count and the learning rate collapse to the number of triples. Five triples per intensity is five reachable images, and habituation is the failure mode the image system exists to prevent. Drawn independently, the same strings reach 5 x 8 x 8 = 320 combinations per intensity. Welded triples also make every attribute exactly as sparse as the rarest one, so no attribute can accumulate enough ratings to mean anything; split apart, a single reaction is evidence about three descriptors rather than one.
 
@@ -322,7 +322,27 @@ This is a different guarantee from the `_SELECTION_EPSILON` floor described unde
 
 **Vocabulary size is a budget, not a feature.** Separating a liked descriptor from a disliked one takes roughly 40 ratings for that descriptor. At this system's volume that is reachable over a season only while the style and palette vocabularies stay around eight entries each. Every value added dilutes per-value evidence linearly, so growth is deliberate and bounded rather than open-ended. Repetition is addressed by recombination, not by longer lists.
 
-Task descriptions are private. They are passed to the image-generation call for metadata and sensitivity classification, but `_build_image_prompt()` does not embed task text into the prompt. The prompt is assembled from the selected theme-family, style, palette, streak marker count, humor level, and feedback guidance only. Generic progress imagery is used regardless of whether task text is available.
+Layers 2, 3, and 4 are multipliers on the same per-axis weights, so a motif-suited descriptor the user also likes compounds. Every descriptor keeps a non-zero weight — the `_SELECTION_EPSILON` floor applies after every bias, so no layer can make a scene unreachable.
+
+##### Task Motif Classification
+
+The image is about what the user finished, and the task title still never leaves the local network. Those hold together because classification and generation talk to different places: text inference runs against the local LLM proxy, while image generation calls the external provider.
+
+- `classify_task_motif()` runs on the cheap tier and returns one key from the motif vocabulary in `app/tools/rewards.py` (`errand`, `communication`, `cleanup`, `repair`, `admin`, `creative`, `movement`, `learning`, `planning`, `social`), or nothing.
+- The local-only claim is enforced, not assumed. `setup/model-tiers.json` can point any tier at an external provider without touching the call site, so `classify_task_motif()` checks `app.models.is_local_tier("cheap")` first and declines to send the title when the tier resolves to a non-local model family. A tier swap costs a themed image, never the title.
+- The motif's scene phrase is fixed generic English. No task text is interpolated into it, so the motif label is the only task-derived value that reaches the image provider.
+- Output is checked against the vocabulary allowlist. A task title is user-controlled text, so a title that tries to steer the classifier can at worst select a different celebration scene.
+- A blank title, an off-vocabulary answer, or a classifier failure yields no motif. The prompt then omits the motif line entirely and falls back to generic progress imagery — an unclassifiable task still earns its image.
+- Sensitive tasks are never classified. Their title is not sent to any model, and no image is generated.
+- Classification only runs when an image is actually possible. Without `OPENAI_API_KEY` there is no prompt to steer, and a model round-trip before a text-only fallback is latency the user pays for nothing — immediate gratification is the point of the reward.
+
+**How the motif reaches the picture.** It biases the theme axis and adds one scene line to the prompt. The bias is a multiplier on theme descriptors mapped to that motif, applied alongside the preference bonus and under the same novelty floor: a motif shifts which scene is likely, never which scenes are possible. Style and palette are untouched — they describe how the scene is rendered, not what was accomplished.
+
+The affinity map covers the seed vocabulary only. A descriptor added by the weekly evolution job carries no motif affinity and draws at its unbiased weight; relevance then rests on the motif line, which applies to every descriptor. Inferring affinity from descriptor text would mean matching against strings the model proposed, and a wrong match reads worse than no match.
+
+`_build_image_prompt()` assembles the selected theme-family, style, palette, motif phrase, streak marker count, humor level, and feedback guidance. It never embeds task text.
+
+The motif is persisted on `reward_manifests.motif`, which is what makes image relevance auditable: generated PNGs live in a Docker volume, so the manifest row is where the connection between a task and the picture it earned can be checked after the fact.
 
 #### Reward Delivery Contract
 
@@ -369,12 +389,11 @@ Each intensity level has 5+ theme candidates. Selection is weighted by preferenc
 
 #### Sensitive Task Guardrail
 
-When the task classifier detects a private or shame-heavy completion (therapy, medical, legal, financial, or private admin work), reward generation switches to a stricter mode:
+When the task classifier detects a private or shame-heavy completion (therapy, medical, legal, financial, or private admin work), image generation is skipped entirely:
 
-- `task_mode` forced to `metaphorical`
-- theme/style/palette chosen only from calm abstract-or-symbolic allowlists
-- humor forced to `subtle`
-- literal task artifacts, mascots, animal scenes, paperwork, money, medical tools, and joke imagery excluded
+- the task is not classified into a motif — its title is sent to no model
+- image generation is not called; there is no abstract fallback image
+- the user receives muted emoji text only, consistent with the Reward Delivery Contract
 
 #### Reward Preference Schema
 
@@ -384,12 +403,15 @@ Canonical reward image preferences live under key `rewards` in `user_prefs.prefs
 {
   "preferred_styles": ["storybook watercolor", "paper collage illustration"],
   "preferred_palettes": ["cozy pastel glow", "aurora jewel tones"],
-  "avoid": ["medical literal", "spiders"],
+  "avoid": ["clinical imagery", "spiders"],
+  "favorite_subjects": ["deep space", "sleeping cats"],
   "humor_level": "playful"
 }
 ```
 
 This object is what `load_reward_prefs` returns — it is the value of `prefs_json -> 'rewards'`, not a column of its own.
+
+Every value here passes `_sanitize_descriptor` before it reaches selection or the prompt, so a value the sanitizer rejects is silently a no-op rather than an error. Write preferences in its terms: lowercase words, spaces, commas, apostrophes and hyphens only; at most 8 words and 60 characters; and none of the banned terms, which include prompt-framing words (`ignore`, `system`, `text`, `caption`, `logo`), people (`person`, `child`, `celebrity`), and every sensitive-task keyword — `medical`, `therapy`, `legal`, and the rest. That last rule is why an avoid entry like "medical literal" stores fine and then does nothing.
 
 Supported preference dimensions:
 
@@ -397,13 +419,15 @@ Supported preference dimensions:
 - **Palettes** - warm, pastel, jewel-tone, neon, nature-led
 - **Avoid list** - tags or vibes to suppress
 - **Humor level** - `subtle`, `playful`, or `maximal`
-- **Subjects** (`favorite_subjects`) - deferred; field is accepted in storage but no runtime code reads it yet
+- **Subjects** (`favorite_subjects`) - joins the theme vocabulary for the draw and is favored within it, the same way stated styles and palettes extend their own axes
 
 **How preferences reach image generation:** `maybe_reward` loads the profile with `load_reward_prefs(peer)`, which reads `prefs_json -> 'rewards'` for that peer. A caller may pass preferences explicitly via the `user_prefs` argument instead — any non-`None` value (including `{}`) wins and no lookup happens; no caller in the graph passes this argument, so the stored profile is what runs in production. Preferences are read from Postgres at reward time rather than carried in LangGraph State, because State is the checkpoint unit — a copy living there would be persisted per conversation thread and drift from the table on every edit.
 
 The lookup fails open: a missing row, a missing or wrongly-typed `rewards` subtree, or a database error all yield an empty profile and neutral generation. A preferences failure never blocks a reward.
 
 **Input constraint:** preference values are intended as visual descriptors — art styles, palettes, and subject categories — and must not contain personal detail. `preferred_styles`, `preferred_palettes`, and `favorite_subjects` are sanitized by `_sanitize_descriptor` before entering selection vocabularies; rejected values are dropped without content logging. The drawn descriptor — which may be a sanitized preference value or a seed constant — is persisted on `reward_manifests` as `style` and `palette`, so treat those manifest columns as user-influenced text in ops queries. See **Descriptors are untrusted input** below for the full sanitizer contract.
+
+Every preference dimension that reaches the prompt passes the same gate, not just the ones that become selection vocabulary. `avoid` terms are sanitized by the same function before they are joined into the prompt's avoid clause, and `humor_level` is validated against its three defined values rather than interpolated. Preferences only became live once `load_reward_prefs` started running for every eligible completion, which is what turned an unread column into text in front of the external image provider.
 
 #### Streak Enhancements
 
@@ -412,7 +436,8 @@ Streak count modifies generated image:
 | Streak | Visual Enhancement |
 |--------|--------------------|
 | 1 | One small glowing progress marker |
-| N > 1 | Exactly N small glowing progress markers, one per completed task in the current streak |
+| 1 < N ≤ 10 | Exactly N small glowing progress markers, one per completed task in the current streak |
+| N > 10 | Ten markers. The marker is a composition detail, not a counter — past roughly a dozen the model stops rendering them as countable objects, so the ask stops growing. |
 
 #### Feedback Loop
 
@@ -447,9 +472,14 @@ reaction can be attributed to them:
 
 These columns are NULL for emoji-only rewards and for rows written when image generation fails.
 
+Two further columns describe the task-to-image relationship rather than the image itself:
+
+- `motif` (TEXT) — the classified task motif. Recorded even when generation fails, because it describes the task, not the picture. NULL for sensitive and emoji-only rewards and when classification yields nothing.
+- `image_failure_reason` (TEXT) — why a delivery fell back to text: `no_api_key`, `not_eligible`, `api_error`, or `empty_response`. NULL when an image was generated or none was attempted. Fixed vocabulary, never user-authored text.
+
 **Idempotency:** `feedback_at IS NULL` prevents double-counting. If a user reacts twice, only the first reaction for a given reward row is recorded. A later reaction may still match another unrated reward inside the tight timestamp window.
 
-**Weighted selection:** `load_feedback_history` loads recent rated rewards for the peer from the last 90 days. `_select_theme` then draws each axis separately with `_draw_attribute`, weighting the axis' vocabulary with `_attribute_weight`.
+**Weighted selection:** `load_feedback_history` loads recent rated rewards for the peer from the last 90 days. `_select_theme` then draws each axis separately with `_draw_attribute`, weighting the axis' vocabulary with `_attribute_weight`, then applying the stated-preference bonus and — on the theme axis — the task motif's affinity bonus.
 
 For one descriptor on one axis, ratings that name that descriptor accumulate into decayed positive and negative counts:
 
@@ -485,10 +515,11 @@ The prompt guidance is intentionally short and coarse so feedback nudges future 
 Image generation system inherently addresses novelty:
 
 1. **Independent axis draws** - theme, style, and palette are drawn separately, so each intensity reaches the product of its three vocabularies (currently 5 x 8 x 8 = 320 combinations) rather than a fixed list of triples
-2. **Weighted selection with a floor** - preferences and bounded feedback nudge each axis rather than dictating it, and the `_SELECTION_EPSILON` uniform mixture guarantees every active descriptor keeps at least `0.15 / vocabulary_size` probability; feedback cannot drive an active descriptor's odds to zero
-3. **AI variation** - same prompt produces different images each time
-4. **Streak-responsive** - visual elements change as streaks grow
-5. **Evolving pools** - the weekly `theme_evolution` job grows each axis faster than it retires from it, so the reachable combination count rises over time while descriptors the user consistently dislikes drop out
+2. **Weighted selection with a floor** - preferences, task motif, and bounded feedback nudge each axis rather than dictating it, and the `_SELECTION_EPSILON` uniform mixture guarantees every active descriptor keeps at least `0.15 / vocabulary_size` probability; no bias can drive an active descriptor's odds to zero
+3. **Task motifs** - the accomplished task changes the scene, both by favoring theme descriptors that suit it and by adding its own scene line, so the same intensity tier reads differently across different kinds of work
+4. **AI variation** - same prompt produces different images each time
+5. **Streak-responsive** - visual elements change as streaks grow
+6. **Evolving pools** - the weekly `theme_evolution` job grows each axis faster than it retires from it, so the reachable combination count rises over time while descriptors the user consistently dislikes drop out
 
 #### Graceful Degradation — Offline Fallback Rewards
 
@@ -508,9 +539,7 @@ Fallback writes suggestion to `.txt` file (instead of `.png`) and exits successf
 | Variable | Purpose |
 |----------|---------|
 | `OPENAI_API_KEY` | OpenAI API authentication for image generation |
-| `REWARD_STATE_FILE` | Optional override for where reward preferences are loaded from |
-| `REWARD_WORK_TYPE` | Optional task context used to shape composition |
-| `REWARD_ENERGY_LEVEL` | Optional task context used to tune intensity and gentleness |
+| `REWARD_ARTIFACTS_DIR` | Directory for storing generated reward images (default: `/tmp/reward_artifacts`) |
 
 #### Image Archive & Collection
 
@@ -1032,8 +1061,6 @@ Capabilities exposed via conversation commands. The app graph handles these dire
 |----------|---------|---------|
 | `OPENAI_API_KEY` | OpenAI API for image generation | `sk-proj-xxxxxxxx` |
 | `DATABASE_URL` | Postgres connection string; reward prefs loaded from `user_prefs` table | `postgresql://hml:hml@postgres:5432/hml` |
-| `REWARD_WORK_TYPE` | Optional work type hint for reward imagery | `focus` |
-| `REWARD_ENERGY_LEVEL` | Optional energy hint for reward imagery | `low` |
 | `TWILIO_ACCOUNT_SID` | Twilio authentication | `ACxxxxxxxx` |
 | `TWILIO_AUTH_TOKEN` | Twilio authentication | `xxxxxxxx` |
 | `TWILIO_PHONE_NUMBER` | Sender phone number | `+1234567890` |

@@ -1,0 +1,8 @@
+id: reward-motif-learning
+node: reward_motif
+peer: "<test-peer-1>"
+inbound: "Read chapter three of the statistics textbook"
+tier: cheap
+contracts:
+  - kind: regex_require
+    pattern: "^learning$"

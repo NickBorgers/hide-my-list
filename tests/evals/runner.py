@@ -479,6 +479,27 @@ def _invoke_node(node: str, fixture: Fixture) -> tuple[str, str | None]:
                 )
         return str(classified.get("intent") or ""), None
 
+    if node == "reward_motif":
+        # Reward motif classification lives in app/tools/rewards.py, not under
+        # app/graph/nodes/, and returns a bare label rather than a draft. The
+        # label is what steers the celebration image's subject matter, so it is
+        # the scored response.
+        from app.tools.rewards import classify_task_motif  # noqa: PLC0415
+
+        with capture_logs() as captured:
+            motif = asyncio.run(classify_task_motif(fixture.inbound))
+        for entry in captured:
+            if entry.get("event") == "reward_motif.failed":
+                raise RuntimeError(
+                    "classify_task_motif took its exception fallback path — it "
+                    "returned the empty default, not model output, and scoring it "
+                    "would be meaningless. Fix the underlying error before "
+                    "trusting this fixture."
+                )
+        # An unrecognised label returns "" and scores as a contract failure,
+        # which is correct: the model was consulted and answered off-vocabulary.
+        return motif, None
+
     module_path = f"app.graph.nodes.{node}"
     import importlib  # noqa: PLC0415
 

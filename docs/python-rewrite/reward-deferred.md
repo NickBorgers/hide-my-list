@@ -53,7 +53,7 @@ The following are fully implemented in Phase B:
 
 - Emoji rewards (intensity-mapped: lightest/low/medium/high/epic)
 - AI-generated celebration images via OpenAI `gpt-image-1` (`generate_reward_image()`)
-- Sensitive-task guardrails (metaphorical/abstract imagery, muted emoji)
+- Sensitive-task guardrails (no image, muted emoji only)
 - Feedback weighting with 90-day load window, 45-day decay half-life, per-axis nudge caps (theme ±0.25, style/palette ±0.50), and `_SELECTION_EPSILON` probability floor
 - Fallback rewards (pool of 12 real-life suggestions) when image gen fails
 - `reward_manifests` Postgres table for delivery records (private `task_title` column)

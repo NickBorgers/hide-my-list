@@ -59,6 +59,16 @@ _VALID_TIERS: frozenset[str] = frozenset(["expensive", "medium", "cheap", "remin
 # allowlist catches typos in setup/model-tiers.json before the first call.
 _VALID_MODEL_PREFIXES: tuple[str, ...] = ("claude-", "gemma", "gpt-")
 
+# Model-ID prefixes served by the self-hosted model on the tailnet rather than
+# by an external provider. The proxy forwards `claude-` and `gpt-` aliases off
+# the network; `gemma` is the locally-hosted family.
+#
+# This exists so a caller can refuse to send private data through a tier that
+# has been swapped to an external provider. setup/model-tiers.json is editable
+# without touching call sites, so a privacy promise made in prose is only worth
+# as much as the check that enforces it — see is_local_tier().
+_LOCAL_MODEL_PREFIXES: tuple[str, ...] = ("gemma",)
+
 # Per-tier extra request body forwarded to the LiteLLM proxy. The proxy
 # passes `think` straight through to the Ollama backend. Cheap tier turns
 # reasoning off because its sole caller (intent classifier) only needs a
@@ -149,6 +159,26 @@ def _load_model_tiers() -> dict[str, str]:
             )
 
     return data
+
+
+def is_local_tier(tier: Tier) -> bool:
+    """Whether `tier` currently resolves to a locally-hosted model.
+
+    Call this before sending private user data (task titles, message bodies) to
+    a tier whose only justification for seeing that data is that it stays on the
+    tailnet. A tier swap in setup/model-tiers.json can point any tier at an
+    external provider, so the caller — not the config — has to decide whether
+    the data may follow.
+
+    Returns False rather than raising when the tier is unknown or the config
+    cannot be read: an unanswerable question about where data goes is answered
+    as "not local".
+    """
+    try:
+        model_id = _load_model_tiers()[tier]
+    except Exception:
+        return False
+    return any(model_id.startswith(prefix) for prefix in _LOCAL_MODEL_PREFIXES)
 
 
 def llm(tier: Tier, *, temperature: float = 0.0, caller: str | None = None) -> ChatOpenAI:

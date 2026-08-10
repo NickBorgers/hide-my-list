@@ -1,0 +1,10 @@
+id: reward-motif-admin
+node: reward_motif
+peer: "<test-peer-1>"
+inbound: "Renew the vehicle registration before it lapses"
+tier: cheap
+contracts:
+  # A bureaucratic obligation also reads as an errand when it means a trip to
+  # a counter. Either motif yields a fitting celebration scene.
+  - kind: regex_require
+    pattern: "^(admin|errand)$"

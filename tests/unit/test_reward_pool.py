@@ -223,10 +223,13 @@ class TestRewardDeliveryIsNeverBlocked:
 
         image_mock = AsyncMock(
             return_value={
-                "path": "/tmp/reward_artifacts/test-image.png",
-                "theme_family": "test theme",
-                "style": "test style",
-                "palette": "test palette",
+                "image": {
+                    "path": "/tmp/reward_artifacts/test-image.png",
+                    "theme_family": "test theme",
+                    "style": "test style",
+                    "palette": "test palette",
+                },
+                "failure_reason": None,
             }
         )
 
@@ -281,10 +284,13 @@ class TestRewardDeliveryIsNeverBlocked:
                 "generate_reward_image",
                 new=AsyncMock(
                     return_value={
-                        "path": "/tmp/reward_artifacts/test-image.png",
-                        "theme_family": "placeholder theme",
-                        "style": "placeholder style",
-                        "palette": "placeholder palette",
+                        "image": {
+                            "path": "/tmp/reward_artifacts/test-image.png",
+                            "theme_family": "placeholder theme",
+                            "style": "placeholder style",
+                            "palette": "placeholder palette",
+                        },
+                        "failure_reason": None,
                     }
                 ),
             ),

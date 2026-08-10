@@ -58,11 +58,12 @@ async def test_blank_description_still_calls_images_generate() -> None:
     result, generate_mock = await _generate([""])
 
     generate_mock.assert_awaited_once()
-    assert result is not None, (
+    assert result["image"] is not None, (
         "A blank task title must not suppress image generation — the image "
         "prompt never embeds task text, so there is nothing to guard against."
     )
-    assert result["path"], "a successful generation must return an artifact path"
+    assert result["failure_reason"] is None
+    assert result["image"]["path"], "a successful generation must return an artifact path"
 
 
 @pytest.mark.asyncio
@@ -71,7 +72,7 @@ async def test_all_blank_descriptions_still_generate() -> None:
     result, generate_mock = await _generate(["   ", "\n", ""])
 
     generate_mock.assert_awaited_once()
-    assert result is not None
+    assert result["image"] is not None
 
 
 def test_prompt_never_contains_task_text() -> None:
