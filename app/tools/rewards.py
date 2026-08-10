@@ -517,7 +517,13 @@ def _draw_attribute(
     is what enforces the novelty floor: every value keeps at least
     _SELECTION_EPSILON / len(vocabulary) probability no matter how negative its
     history. docs/reward-system.md treats habituation as the failure mode the
-    image system exists to prevent, so no descriptor may ever be excluded.
+    image system exists to prevent, so feedback may bias a draw and may never
+    zero one out.
+
+    The floor covers the vocabulary it is handed. Which descriptors are in that
+    vocabulary is decided on a slower clock by app/scheduler/theme_evolution.py,
+    which retires values with sustained negative evidence and adds new ones
+    faster than it retires. See "Vocabulary Evolution" in docs/reward-system.md.
     """
     weights = []
     for value in vocabulary:

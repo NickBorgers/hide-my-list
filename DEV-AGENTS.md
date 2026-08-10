@@ -63,7 +63,8 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/graph/nodes/_task_match.py` — Shared open-task extraction, token shortlist, and model-response parsing helper used by ADD_TASK (duplicate detection) and COMPLETE (title-match resolution)
 - `app/graph/nodes/_task_token.py` — Shared `{task}` token substitution; prompts write the literal token and the application fills in the exact stored title
 - `app/scheduler/scheduler.py` — APScheduler v3 wiring with PostgresJobStore
-- `app/scheduler/jobs.py` — Declarative SCHEDULED_JOBS list + reconcile_jobstore; jobs: `reminder_dispatcher`, `notion_health`, `ops_alerts_drain`, `state_audit`, `check_in_dispatcher`, `weekly_recap`, `reminder_scheduler`, `signal_ingress_silence`
+- `app/scheduler/jobs.py` — Declarative SCHEDULED_JOBS list + reconcile_jobstore; jobs: `reminder_dispatcher`, `notion_health`, `ops_alerts_drain`, `state_audit`, `check_in_dispatcher`, `weekly_recap`, `reminder_scheduler`, `signal_ingress_silence`, `theme_evolution`
+- `app/scheduler/theme_evolution.py` — Weekly reward vocabulary growth/pruning; gated on ≥12 new ratings, rate-limited per axis, floors prevent an axis collapsing. Cheap-tier LLM sees aggregate descriptors + counts only — never task titles or peers — and its output passes `_sanitize_descriptor` before storage. Fails inert: any error leaves the vocabulary unchanged
 - `app/scheduler/reminder_worker.py` — SELECT FOR UPDATE SKIP LOCKED worker; completes Notion only for `reminder_outbox.kind='reminder'`
 - `app/scheduler/deadline_planner.py` — Pure deadline milestone planner and quiet-hours/load-balancing slot assignment
 - `app/scheduler/reminder_scheduling.py` — Shared deadline reminder scheduler helper; writes `reminder_scheduling_ledger`, deadline outbox rows, and private page-to-peer routing metadata

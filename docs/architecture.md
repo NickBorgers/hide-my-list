@@ -123,6 +123,7 @@ duplicate delivery over loss.
 | `reminder_scheduler` | Daily 04:00 USER_TZ | Schedule missing deadline reminder series and refresh edited deadlines |
 | `weekly_recap` | Sun 18:00 USER_TZ | Generate weekly recap |
 | `signal_ingress_silence` | 60 min (configurable) | Read `signal_ingress_health`; log a warning when inbound silence exceeds threshold |
+| `theme_evolution` | Mon 04:30 USER_TZ | Grow and prune each peer's reward descriptor vocabulary |
 
 ## Model Routing
 
