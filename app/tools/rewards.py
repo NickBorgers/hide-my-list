@@ -22,6 +22,7 @@ Private data discipline (Codex F018):
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import random
 import re
@@ -108,10 +109,7 @@ _SENSITIVE_KEYWORDS: frozenset[str] = frozenset([
 def is_sensitive_task(task_title: str) -> bool:
     """Classify whether a task title is sensitive (private/shame-heavy).
 
-    Sensitive tasks receive suppressed or muted rewards:
-    - task_mode forced to metaphorical
-    - no literal task artifacts in imagery
-    - humor forced to subtle
+    Sensitive tasks receive muted emoji only — no motif classification, no image.
 
     Args:
         task_title: Task title string (private — not logged by this function).
@@ -593,11 +591,14 @@ async def classify_task_motif(task_title: str) -> str:
             return ""
 
         model = llm("cheap", caller="reward_motif")
-        response = await model.ainvoke(
-            [
-                SystemMessage(content=_MOTIF_SYSTEM_PROMPT),
-                HumanMessage(content=f"Completed task: {task_title!r}"),
-            ]
+        response = await asyncio.wait_for(
+            model.ainvoke(
+                [
+                    SystemMessage(content=_MOTIF_SYSTEM_PROMPT),
+                    HumanMessage(content=f"Completed task: {task_title!r}"),
+                ]
+            ),
+            timeout=5.0,
         )
         raw = str(response.content).strip().lower()
 
@@ -993,7 +994,7 @@ async def generate_reward_image(
         motif: Optional motif key from _MOTIFS; "" produces the generic prompt
         work_type: Optional work type hint
         energy_level: Optional energy level hint
-        sensitive_task: If True, uses abstract imagery only and drops the motif
+        sensitive_task: If True, uses abstract/symbolic themes and drops the motif. In production, maybe_reward skips image generation for sensitive completions entirely and never passes True here.
         user_prefs: Optional user reward preferences
         feedback_history: Optional feedback list for theme weighting
         vocabulary: Optional stored descriptor vocabulary; falls back to seeds

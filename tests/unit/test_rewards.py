@@ -1856,6 +1856,22 @@ class TestTaskMotifClassification:
 
         assert sentinel not in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_timeout_yields_no_motif(self) -> None:
+        """A hung model must not block reward delivery.
+
+        asyncio.wait_for raises TimeoutError when the inner coroutine stalls;
+        the except-all guard converts it to the generic fallback path.
+        """
+
+        from app.tools.rewards import classify_task_motif
+
+        with patch("app.tools.rewards.asyncio") as mock_asyncio:
+            mock_asyncio.wait_for = AsyncMock(side_effect=TimeoutError())
+            result = await classify_task_motif("Placeholder store run")
+
+        assert result == ""
+
 
 class TestMotifInImagePrompt:
     """The motif is the only task-derived signal that reaches the image model."""
@@ -2291,6 +2307,38 @@ class TestMaybeRewardMotifWiring:
 
         classify_mock.assert_not_called()
         assert manifest_mock.await_args.kwargs["motif"] is None
+
+    @pytest.mark.asyncio
+    async def test_hung_classifier_does_not_block_image_generation(self) -> None:
+        """A timed-out classifier must not prevent the completion image.
+
+        classify_task_motif handles its own timeout and returns ""; maybe_reward
+        must still reach generate_reward_image with motif="" rather than failing
+        or skipping the image.
+        """
+        from contextlib import ExitStack
+
+        from app.tools import rewards as rewards_module
+
+        image_mock = AsyncMock(return_value=_fake_attempt())
+        with ExitStack() as stack:
+            for p in self._patches(
+                rewards_module,
+                classify_task_motif=AsyncMock(return_value=""),
+                generate_reward_image=image_mock,
+            ):
+                stack.enter_context(p)
+            stack.enter_context(patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}))
+            await rewards_module.maybe_reward(
+                peer="<test-peer-motif-6>",
+                task_title="Placeholder store run",
+                notion_page_id="<page-id-m06>",
+                streak=3,
+                energy_required="High",
+            )
+
+        image_mock.assert_called_once()
+        assert image_mock.await_args.kwargs["motif"] == ""
 
     @pytest.mark.asyncio
     async def test_no_classification_when_no_image_is_possible(self) -> None:

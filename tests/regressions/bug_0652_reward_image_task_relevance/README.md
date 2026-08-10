@@ -26,7 +26,7 @@ all.
 
 `classify_task_motif()` labels the completed task with one key from the fixed
 `_MOTIFS` vocabulary, on the local cheap LLM tier. The label — never the title —
-biases theme selection (`_MOTIF_AFFINITY_BOOST`) and adds one scene line to the
+biases theme selection (`_MOTIF_BONUS`) and adds one scene line to the
 prompt. The title still never leaves the tailnet: text inference runs against the
 local proxy while image generation calls OpenAI.
 

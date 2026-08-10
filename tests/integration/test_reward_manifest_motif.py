@@ -132,6 +132,69 @@ async def test_failure_reason_round_trips_on_a_fallback(clean_manifests: Any) ->
 
 
 @pytest.mark.asyncio
+async def test_classify_task_motif_reachable_from_maybe_reward(clean_manifests: Any) -> None:
+    """classify_task_motif is reachable end-to-end from maybe_reward.
+
+    Verifies the full wiring: motif classification feeds generate_reward_image
+    and the same motif is persisted on the manifest row. Uses a real Postgres
+    manifest write; mocks only the LLM and image provider so no external calls
+    are made.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.tools.rewards import maybe_reward
+
+    # Fake image attempt that looks like a successful generation.
+    fake_image = {
+        "path": "/data/reward_artifacts/placeholder.png",
+        "theme_family": "fox dancing in wildflowers",
+        "style": "watercolor",
+        "palette": "spring green",
+    }
+    fake_attempt = {"image": fake_image, "failure_reason": None}
+
+    # Stub LLM: ainvoke returns "errand" so classify_task_motif produces a label.
+    fake_response = MagicMock()
+    fake_response.content = "errand"
+    fake_model = MagicMock()
+    fake_model.ainvoke = AsyncMock(return_value=fake_response)
+    fake_llm = MagicMock(return_value=fake_model)
+
+    image_mock = AsyncMock(return_value=fake_attempt)
+
+    with (
+        patch("app.tools.rewards.asyncio.wait_for", new=AsyncMock(return_value=fake_response)),
+        patch("app.models.is_local_tier", return_value=True),
+        patch("app.models.llm", fake_llm),
+        patch("app.tools.rewards.generate_reward_image", image_mock),
+        patch("app.tools.rewards.load_reward_prefs", AsyncMock(return_value={})),
+        patch("app.tools.rewards.load_feedback_history", AsyncMock(return_value=[])),
+        patch("app.tools.rewards.load_vocabulary", AsyncMock(return_value=None), create=True),
+        patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
+    ):
+        await maybe_reward(
+            peer=_PEER,
+            task_title="Placeholder store run",
+            notion_page_id=f"<page-{uuid.uuid4()}>",
+            streak=2,
+            energy_required="High",
+        )
+
+    # The motif the classifier returned must reach generate_reward_image.
+    image_mock.assert_called_once()
+    assert image_mock.await_args.kwargs["motif"] == "errand"
+
+    # The same motif must be persisted on the manifest row.
+    cur = await clean_manifests.execute(
+        "SELECT motif FROM reward_manifests WHERE peer = %s ORDER BY delivered_at DESC LIMIT 1",
+        (_PEER,),
+    )
+    row = await cur.fetchone()
+    assert row is not None, "manifest row must have been written"
+    assert row[0] == "errand"
+
+
+@pytest.mark.asyncio
 async def test_omitted_columns_store_null(clean_manifests: Any) -> None:
     """Emoji-only rewards and pre-0012 rows read back identically."""
     from app.tools.rewards import write_reward_manifest

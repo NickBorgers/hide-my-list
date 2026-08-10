@@ -333,7 +333,7 @@ The image is about what the user finished, and the task title still never leaves
 - The motif's scene phrase is fixed generic English. No task text is interpolated into it, so the motif label is the only task-derived value that reaches the image provider.
 - Output is checked against the vocabulary allowlist. A task title is user-controlled text, so a title that tries to steer the classifier can at worst select a different celebration scene.
 - A blank title, an off-vocabulary answer, or a classifier failure yields no motif. The prompt then omits the motif line entirely and falls back to generic progress imagery — an unclassifiable task still earns its image.
-- Sensitive tasks are never classified. Their title is not sent to any model, and their imagery stays abstract.
+- Sensitive tasks are never classified. Their title is not sent to any model, and no image is generated.
 - Classification only runs when an image is actually possible. Without `OPENAI_API_KEY` there is no prompt to steer, and a model round-trip before a text-only fallback is latency the user pays for nothing — immediate gratification is the point of the reward.
 
 **How the motif reaches the picture.** It biases the theme axis and adds one scene line to the prompt. The bias is a multiplier on theme descriptors mapped to that motif, applied alongside the preference bonus and under the same novelty floor: a motif shifts which scene is likely, never which scenes are possible. Style and palette are untouched — they describe how the scene is rendered, not what was accomplished.
