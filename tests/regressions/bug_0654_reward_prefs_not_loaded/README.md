@@ -8,7 +8,8 @@ hardcoded default triples regardless of stored profile.
 
 ## Regression coverage
 
-`tests/integration/test_reward_prefs_load.py::test_maybe_reward_uses_stored_prefs_without_mock`
+The test lives in `tests/integration/test_reward_prefs_load.py`, as
+`test_maybe_reward_uses_stored_prefs_without_mock`.
 
 Writes a preference profile to Postgres, invokes `maybe_reward` with the real
 `load_reward_prefs` path (not patched), and asserts that `generate_reward_image`
