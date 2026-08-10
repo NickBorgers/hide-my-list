@@ -40,6 +40,39 @@ non-empty placeholder API key and the OpenAI-compatible `/v1` endpoint — rathe
 than repo secrets. The compose smoke is manually gated by `ENABLE_COMPOSE_SMOKE` —
 there's no scheduled trigger (it boots the full stack and is too slow for PR CI).
 
+**Why evals are not a PR check.** A `pull_request`-triggered job on the
+self-hosted runner would check out the PR branch and execute its code, on a
+machine reachable from the tailnet — arbitrary code execution from an
+unreviewed branch. The proxy is only reachable from that runner, so there is no
+GitHub-hosted alternative. The cost of that choice is real and worth naming:
+nightly finds a behavioral regression the morning after it merged.
+
+### Running evals before you push
+
+The suite is not runner-only. Any machine on the tailnet can reach the proxy, so
+run it yourself on a change that touches prompts, graph nodes, model tiers, or
+anything else whose output the fixtures score:
+
+```bash
+ENABLE_LIVE_LLM_EVALS=true \
+EVAL_MODELS=gemma4-small \
+EVAL_BASELINE_MODELS=gemma4-small \
+EVAL_BUDGET_USD=5 \
+LLM_PROXY_API_KEY=fake-key \
+LLM_PROXY_BASE_URL=https://llm.featherback-mermaid.ts.net/v1 \
+pytest tests/evals/ -q
+```
+
+`EVAL_MODELS` should match the deployed tier values in `setup/model-tiers.json`;
+the nightly workflow derives them from that file rather than hardcoding them.
+The proxy does not verify bearer tokens, so the API key is any non-empty
+placeholder.
+
+Do this before opening the PR, not after the nightly tells you. It is the only
+point in the workflow where a prompt regression is caught before it merges —
+the mocked layers cannot see one, because what they assert about is the prompt
+string, not what the model does with it.
+
 ---
 
 ## The Ten Bug Classes
