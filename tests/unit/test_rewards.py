@@ -669,6 +669,7 @@ class TestDescriptorSanitization:
         assert "passport" not in prompt
         assert "\n" not in prompt
 
+
 class TestFeedbackWeightedSelection:
     """Emoji reactions must actually steer future image selection.
 
@@ -1393,6 +1394,68 @@ class TestRewardFeedback:
 
         assert "User has positively responded to recent rewards" in prompt
         assert "lean energetic and celebratory" in prompt
+
+
+
+# ---------------------------------------------------------------------------
+# tst-002: record_use call payload and signature contract
+# ---------------------------------------------------------------------------
+
+class TestRecordUseCallContract:
+    """record_use inside the swallowed handler must carry the expected kwargs.
+
+    Clause 10: side-effecting calls inside intentional exception-swallowing
+    handlers must have a test asserting outbound kwargs shape and validating
+    each kwarg name against inspect.signature(real_dependency).
+    """
+
+    @pytest.mark.asyncio
+    async def test_record_use_call_payload_and_signature_contract(self) -> None:
+        """record_use is called with drawn selection keys; kwargs match its signature."""
+        import inspect
+
+        from app.tools import reward_pool as reward_pool_module
+        from app.tools import rewards as rewards_module
+
+        record_use_mock = AsyncMock()
+        vocab = {
+            "theme": ["cheerful bird with sparkle"],
+            "style": ["watercolor"],
+            "palette": ["warm pastel"],
+        }
+
+        with (
+            patch.object(reward_pool_module, "load_vocabulary", AsyncMock(return_value=vocab)),
+            patch.object(reward_pool_module, "record_use", record_use_mock),
+            patch.object(rewards_module, "generate_reward_image", AsyncMock(return_value=_fake_image())),
+            patch.object(rewards_module, "write_reward_manifest", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(rewards_module, "compute_intensity", return_value=("high", 70)),
+            patch.object(rewards_module, "load_reward_prefs", AsyncMock(return_value={})),
+            patch.object(rewards_module, "load_feedback_history", AsyncMock(return_value=[])),
+        ):
+            await rewards_module.maybe_reward(
+                peer="<test-peer-rcu>",
+                task_title="Placeholder task title",
+                notion_page_id="<page-id-rcu>",
+                streak=3,
+                energy_required="High",
+                time_estimate=45,
+            )
+
+        record_use_mock.assert_awaited_once()
+        call_args = record_use_mock.await_args
+        # peer is passed as the first positional argument
+        assert call_args.args[0] == "<test-peer-rcu>"
+        kwargs = call_args.kwargs
+        assert "selection" in kwargs
+        assert "intensity" in kwargs
+        assert set(kwargs["selection"]) == {"theme_family", "style", "palette"}
+        assert kwargs["selection"]["theme_family"] == "test theme"
+        assert kwargs["selection"]["style"] == "test style"
+        assert kwargs["selection"]["palette"] == "test palette"
+        # All keyword args must be valid parameters of the real record_use
+        assert set(kwargs) <= set(inspect.signature(reward_pool_module.record_use).parameters)
+
 
 
 # ---------------------------------------------------------------------------
