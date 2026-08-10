@@ -10,17 +10,25 @@ label does — so these tests assert on the motif, never on title text.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.tools import rewards as rewards_module
-from app.tools.rewards import _MOTIFS, _THEME_POOLS, _build_image_prompt, classify_task_motif
+from app.tools.rewards import (
+    _MOTIF_THEME_AFFINITY,
+    _MOTIFS,
+    _SEED_THEMES,
+    _build_image_prompt,
+    classify_task_motif,
+)
 
 
 def _themes_for(intensity: str, motif: str) -> set[str]:
-    return {entry["theme"] for entry in _THEME_POOLS[intensity] if motif in entry["motifs"]}
+    """Seed themes at `intensity` that the motif favors."""
+    return _MOTIF_THEME_AFFINITY[motif] & set(_SEED_THEMES[intensity])
 
 
 @pytest.mark.asyncio
@@ -49,24 +57,25 @@ async def test_classified_motif_reaches_the_prompt() -> None:
 def test_motif_steers_which_scene_is_drawn() -> None:
     """A motif line on a randomly-picked scene would still be the wrong picture.
 
-    Selection must favor themes tagged for the motif, so the whole composition
-    — not just one appended sentence — reflects what the user finished.
+    Selection must favor theme descriptors that suit the motif, so the whole
+    composition — not just one appended sentence — reflects what the user
+    finished.
     """
-    captured: dict[str, float] = {}
+    captured: list[dict[str, float]] = []
 
-    def fake_choices(
-        population: list[dict[str, str]], weights: list[float], k: int = 1
-    ) -> list[dict[str, str]]:
-        for candidate, weight in zip(population, weights, strict=True):
-            captured[candidate["theme_family"]] = weight
+    def fake_choices(population: list[str], weights: list[float], k: int = 1) -> list[str]:
+        captured.append(dict(zip(population, weights, strict=True)))
         return [population[0]]
 
     with patch.object(rewards_module.random, "choices", fake_choices):
         rewards_module._select_theme(intensity="high", motif="errand")
 
-    matching = _themes_for("high", "errand")
-    unmatched_best = max(w for theme, w in captured.items() if theme not in matching)
-    assert all(captured[theme] > unmatched_best for theme in matching)
+    # Theme is the first of the three independent axis draws.
+    theme_weights = captured[0]
+    suited = _themes_for("high", "errand")
+    unsuited_best = max(w for theme, w in theme_weights.items() if theme not in suited)
+    assert all(theme_weights[theme] > unsuited_best for theme in suited)
+    assert all(w > 0 for w in theme_weights.values()), "no scene may be excluded outright"
 
 
 @pytest.mark.asyncio
@@ -116,7 +125,9 @@ async def test_maybe_reward_classifies_before_generating() -> None:
 
     with (
         patch("app.models.llm", mock_llm),
-        patch.object(rewards_module, "load_user_prefs", new=AsyncMock(return_value={})),
+        # Classification only runs when an image is actually possible.
+        patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
+        patch.object(rewards_module, "load_reward_prefs", new=AsyncMock(return_value={})),
         patch.object(rewards_module, "load_feedback_history", new=AsyncMock(return_value=[])),
         patch.object(rewards_module, "generate_reward_image", new=fake_generate),
         patch.object(rewards_module, "write_reward_manifest", new=AsyncMock(return_value=uuid.uuid4())),

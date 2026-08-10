@@ -43,7 +43,8 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/tools/signal_client.py` — Signal bridge async client
 - `app/tools/signal_ingress_health.py` — Durable Signal ingress liveness marker; `record_inbound_message` upserts last-inbound timestamp, `check_inbound_silence` logs a warning when the threshold is exceeded
 - `app/tools/reminders.py` — Reminder outbox CRUD
-- `app/tools/rewards.py` — Reward delivery (emoji + image; v1 scope). `classify_task_motif` labels the completed task on the local cheap tier so the celebration image is about the task without the title ever reaching the image provider
+- `app/tools/rewards.py` — Reward delivery (emoji + image; v1 scope). `classify_task_motif` labels the completed task on the local cheap tier so the celebration image is about the task without the title ever reaching the image provider; the label biases the theme draw and adds one scene line to the prompt
+- `app/tools/reward_pool.py` — Per-peer reward descriptor vocabulary; seeds `reward_theme_pool` from the constants in `rewards.py` and loads the active theme/style/palette sets. Fails open to the seed constants — a vocabulary lookup never costs a reward. Sensitive-task rewards never read it.
 - `app/tools/ops_alerts.py` — Ops alert enqueue + drain
 - `app/tools/time_context.py` — Timezone helper
 - `app/tools/db.py` — Postgres connection + migration runner
@@ -59,9 +60,11 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/graph/nodes/check_in.py` — CHECK_IN intent node
 - `app/graph/nodes/complete.py` — COMPLETE intent node
 - `app/graph/nodes/send.py` — Terminal send node; enforces the task-naming invariant on every draft carrying `notion_page_title`
+- `app/graph/nodes/_task_match.py` — Shared open-task extraction, token shortlist, and model-response parsing helper used by ADD_TASK (duplicate detection) and COMPLETE (title-match resolution)
 - `app/graph/nodes/_task_token.py` — Shared `{task}` token substitution; prompts write the literal token and the application fills in the exact stored title
 - `app/scheduler/scheduler.py` — APScheduler v3 wiring with PostgresJobStore
-- `app/scheduler/jobs.py` — Declarative SCHEDULED_JOBS list + reconcile_jobstore; jobs: `reminder_dispatcher`, `notion_health`, `ops_alerts_drain`, `state_audit`, `check_in_dispatcher`, `weekly_recap`, `reminder_scheduler`, `signal_ingress_silence`
+- `app/scheduler/jobs.py` — Declarative SCHEDULED_JOBS list + reconcile_jobstore; jobs: `reminder_dispatcher`, `notion_health`, `ops_alerts_drain`, `state_audit`, `check_in_dispatcher`, `weekly_recap`, `reminder_scheduler`, `signal_ingress_silence`, `theme_evolution`
+- `app/scheduler/theme_evolution.py` — Weekly reward vocabulary growth/pruning; gated on ≥12 new ratings, rate-limited per axis, floors prevent an axis collapsing. Cheap-tier LLM sees aggregate descriptors + counts only — never task titles or peers — and its output passes `_sanitize_descriptor` before storage. Fails inert: any error leaves the vocabulary unchanged
 - `app/scheduler/reminder_worker.py` — SELECT FOR UPDATE SKIP LOCKED worker; completes Notion only for `reminder_outbox.kind='reminder'`
 - `app/scheduler/deadline_planner.py` — Pure deadline milestone planner and quiet-hours/load-balancing slot assignment
 - `app/scheduler/reminder_scheduling.py` — Shared deadline reminder scheduler helper; writes `reminder_scheduling_ledger`, deadline outbox rows, and private page-to-peer routing metadata
@@ -83,7 +86,8 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `migrations/0009_deadline_task_peers.sql` — Adds private `deadline_task_peers` routing metadata for deadline reminder backstop jobs
 - `migrations/0010_signal_ingress_health.sql` — Adds `signal_ingress_health` table for durable Signal ingress liveness markers; seeds a default row
 - `migrations/0011_reward_manifest_visual_descriptors.sql` — Adds `theme_family`, `style`, `palette` to `reward_manifests` so emoji reactions can be attributed to the visual choices that earned them; adds a partial index on rated rows
-- `migrations/0012_reward_manifest_motif.sql` — Adds `motif` (the classified task motif behind the image prompt, so image relevance is auditable without the PNG) and `image_failure_reason` to `reward_manifests`
+- `migrations/0012_reward_theme_pool.sql` — Adds `reward_theme_pool`, the per-peer theme/style/palette vocabulary; `value` reaches the image prompt verbatim, so treat it as user-influenced text in ops queries. CHECK constraints scope themes to an intensity and keep style/palette intensity-free; the unique index COALESCEs intensity so seeding stays idempotent under concurrency
+- `migrations/0013_reward_manifest_motif.sql` — Adds `motif` (the classified task motif behind the image prompt, so image relevance is auditable without the PNG) and `image_failure_reason` to `reward_manifests`
 - `tests/unit/` — Unit tests (no DATABASE_URL required)
 - `tests/integration/` — Integration tests; DB-backed tests require DATABASE_URL, HTTP-only tests do not
 - `tests/perf/` — Perf harness: latency + token stats per model, gated by `ENABLE_LLM_PERF=true`. See `docs/python-rewrite/llm-observability.md` for usage.
@@ -133,7 +137,6 @@ Support dev pipeline. Edit directly via PRs — any contributor or agent (Claude
 - `pyproject.toml` — Python 3.12 dependency manifest for the LangGraph stack; runtime and dev deps pinned by version
 - `.github/workflows/python-validation.yml` — Required CI gate: runs on every PR. The `Python Validation Required` status check always reports. `ruff`, `mypy`, and `pytest-unit` run only when the Python change filter matches `app/`, `migrations/`, `tests/`, `scripts/*.py`, or `pyproject.toml`; they are skipped (and treated as success) on non-Python PRs.
 - `.github/workflows/app-image.yml` — Push-to-`main` (filtered on `docker/Dockerfile`, `app/`, `migrations/`, `setup/`, `pyproject.toml`) + `workflow_dispatch`. Builds `docker/Dockerfile` and pushes `ghcr.io/nickborgersprobably/hide-my-list` tagged `:latest` and `:<sha>`, so deployments pull a published artifact instead of building on the host. Pushes only from `main`, never from PR branches — the PR-side build lives in `pr-tests.yml` as the `Docker Build Check` job. `linux/amd64` only: the builder stage compiles against libpq with gcc, so an arm64 leg would run under QEMU emulation.
-- `.github/workflows/pr-tests.yml` — PR gate. The `LLM Behavior Evals` job runs `python -m tests.evals.runner` on the self-hosted `homelab` runner for PRs touching `app/prompts/`, `app/graph/`, `app/models.py`, `app/tools/rewards.py`, `docs/ai-prompts/`, `setup/model-tiers.json`, or `tests/evals/`; budget $5. Other jobs cover scripts, docs, workflows, devcontainer, and the Docker build.
 - `.github/workflows/nightly-evals.yml` — Cron (09:00 UTC) + `workflow_dispatch`. Runs `python -m tests.evals.runner` against current `setup/model-tiers.json` values via the LiteLLM proxy. Runs on a self-hosted `homelab` runner: the proxy is tailnet-only and unreachable from GitHub-hosted runners. Posts `report.md` as a workflow artifact. Budget default $10.
 - `.github/workflows/update-signal-cli.yml` — Cron (Mondays 10:00 UTC) + `workflow_dispatch`. Resolves the current `bbernhard/signal-cli-rest-api:latest` digest from the registry and opens a PR when it differs from the digest pinned in `docker/compose.yaml`. Separate from `update-ai-clis.yml` because signal-cli is a production runtime dependency rather than CI tooling — bundling them would make a signal-cli fix wait on review of an unrelated CLI bump. Guarded by `tests/unit/test_signal_cli_pin.py`, which pins the compose-file shape the workflow rewrites.
 - `.github/workflows/model-swap.yml` — `workflow_dispatch` only. Inputs: candidate_model, candidate_tier, budget_usd. Runs baseline + candidate side-by-side on a self-hosted `homelab` runner; surfaces comparison in job summary. Budget default $15. Use before swapping a tier in `setup/model-tiers.json`.

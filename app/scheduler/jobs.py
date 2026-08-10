@@ -234,6 +234,14 @@ async def run_reminder_scheduler_job() -> None:
     await run_reminder_scheduler(user_tz=_USER_TZ)
 
 
+async def evolve_reward_themes() -> None:
+    """Grow and prune each peer's reward descriptor vocabulary."""
+    log.debug("theme_evolution.tick")
+    from app.scheduler.theme_evolution import run_theme_evolution
+
+    await run_theme_evolution()
+
+
 # ---------------------------------------------------------------------------
 # Declarative job list — single source of truth
 # ---------------------------------------------------------------------------
@@ -290,6 +298,19 @@ SCHEDULED_JOBS: list[JobSpec] = [
             timezone=_USER_TZ,
         ),
         func=run_reminder_scheduler_job,
+    ),
+    JobSpec(
+        id="theme_evolution",
+        # Weekly, and offset from reminder_scheduler at 04:00 so two DB-heavy
+        # jobs do not overlap. The job gates itself on evidence, so a run with
+        # too few new ratings is a cheap no-op.
+        trigger=CronTrigger(
+            day_of_week="mon",
+            hour=4,
+            minute=30,
+            timezone=_USER_TZ,
+        ),
+        func=evolve_reward_themes,
     ),
 ]
 

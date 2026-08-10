@@ -274,12 +274,55 @@ Output: `app/tools/rewards.py` generates a PNG, stores it in the reward artifact
 
 Reward prompts are built from four layers:
 
-1. **Intensity theme pool** — low/medium/high/epic control the overall celebration scale; the theme-family, style, and palette are selected from the matching pool
-2. **Task motif** — the completed task is classified into one label from a fixed motif vocabulary; the label biases theme selection toward scenes tagged for it and contributes one scene line to the prompt
-3. **Preference modifiers** — optional `user_prefs.rewards` values (Postgres) bias style, palette, and subject matter
-4. **Feedback weighting** — prior positive/negative reactions bias future theme-family, style, and palette selection
+1. **Independent descriptor axes** — theme-family, style, and palette are drawn separately. Theme comes from the pool for the intensity (low/medium/high/epic), which is what carries celebration scale. Style and palette come from single vocabularies shared across all intensities
+2. **Task motif** — the completed task is classified into one label from a fixed motif vocabulary; the label favors theme descriptors that suit it and contributes one scene line to the prompt
+3. **Preference modifiers** — optional `user_prefs.rewards` values (Postgres) extend the vocabularies and are favored within them, biasing style, palette, and subject matter
+4. **Feedback weighting** — prior positive/negative reactions bias future selection on each axis independently
 
-Layers 2 and 4 are multiplicative factors on the same candidate weights, so a favored motif and a favored theme compound. Every candidate keeps a non-zero weight: novelty is a hard requirement and no layer may exclude a scene outright.
+**Why the axes are independent:** welding theme, style, and palette into fixed triples makes both the reachable image count and the learning rate collapse to the number of triples. Five triples per intensity is five reachable images, and habituation is the failure mode the image system exists to prevent. Drawn independently, the same strings reach 5 x 8 x 8 = 320 combinations per intensity. Welded triples also make every attribute exactly as sparse as the rarest one, so no attribute can accumulate enough ratings to mean anything; split apart, a single reaction is evidence about three descriptors rather than one.
+
+**Why style and palette ignore intensity:** scoping them per intensity would quarter the rate at which observations accumulate, on the two axes that are capable of learning at all. Sharing one vocabulary across intensities pools that evidence. The theme string and the prompt's mood line carry the intensity semantics instead, so an unexpected style pairing stays tonally anchored.
+
+**Where the vocabularies live.** The seed vocabularies are constants in `app/tools/rewards.py`. On a peer's first image reward they are copied into the `reward_theme_pool` table (migration 0012), keyed by peer, and selection reads from there afterward — so a peer's vocabulary can grow and retire independently of what shipped in the repo. Theme rows are scoped to an intensity; style and palette rows carry no intensity, matching the shared-vocabulary design above.
+
+Retirement is a soft delete: a retired row stops appearing in selection but keeps its rating attribution and its history. Nothing is ever deleted, so a retirement can be undone by clearing `retired_at`. No job does that on its own — the weekly evolution job proposes only values the peer has never held, so a retired descriptor stays retired until someone brings it back deliberately.
+
+The table is an enhancement, not a precondition. Seeding failure, an unreachable database, and a vocabulary missing any axis all fall back to the seed constants. A partial vocabulary is refused outright rather than used, because a half-loaded axis would silently narrow selection — the failure this design exists to prevent. `reward_theme_pool.value` is embedded verbatim into the image prompt. The seed population comes from the repo constants above and requires no sanitization; any writer that introduces user-influenced values must pass `_sanitize_descriptor` before inserting. Values are read from the table without further filtering, so treat `reward_theme_pool.value` as user-influenced text in ops queries.
+
+**Sensitive-task rewards never read this table.** Their allowlist stays a code constant and `_select_theme` returns before any vocabulary lookup, so that path cannot be steered by stored content however it got there. This is structural, not a filter.
+
+#### Vocabulary Evolution
+
+A weekly job (`theme_evolution`, Mondays 04:30 local) is what makes a peer's vocabulary drift away from the seeds. It retires descriptors the user consistently reacts badly to, and proposes new ones from the qualities of the descriptors they react well to. Over a season the vocabulary a peer draws from stops being the one that shipped in the repo.
+
+**Evidence gate.** The job does nothing unless at least 12 new ratings have been recorded since the last time it added anything. Below that it logs and returns without calling the model.
+
+**Growth is rate-limited:** at most 2 new descriptors and 1 retirement per axis per run. One intensity's theme tier is considered per run, rotating by ISO week; style and palette carry no intensity and so are considered every run.
+
+**Retirement requires sustained evidence** — at least 3 negative reactions, a success rate at or below 25%, and an age of at least 14 days — and is a soft delete: the row keeps its rating attribution and its history.
+
+**Why retirement is allowed to remove a descriptor from selection.** A descriptor that has earned three negative reactions and a success rate at or below 25% is producing images the user does not want. Keeping it reachable forever, in the name of preserving every theoretical combination, trades a recurring real cost — images the user dislikes — for a hypothetical novelty benefit. Novelty is the goal because habituation is the failure mode, and a disliked descriptor is not doing novelty work; it is spending a reward on something that does not land.
+
+What actually protects novelty is the size and freshness of the active set, not the immortality of any one member of it, and both are structurally guaranteed:
+
+- **Retirement can never outpace growth**, and this is enforced per run rather than implied by the constants. A run inserts first and then retires at most as many descriptors on an axis as it actually inserted there, capped at 1 against a maximum of 2 added. An axis that gained nothing — every proposal rejected by the sanitizer, or all duplicates — loses nothing. The active set can hold steady or grow; it cannot shrink.
+- **Growth is counted honestly.** Proposals are deduplicated against every value the peer has ever held, retired ones included, not just the active set. A proposal matching a retired value would otherwise be accepted, lose to the unique index, store nothing, and still count as the growth that licenses a retirement.
+- **Each axis has a hard floor** it may never fall below: 5 themes per intensity, 4 styles, 4 palettes. Retirement stops at the floor regardless of how negative the evidence is.
+- **Nothing is deleted.** A retired row keeps its history and can come back.
+
+This is a different guarantee from the `_SELECTION_EPSILON` floor described under **The novelty floor**, and the two operate at different timescales. Epsilon governs a single draw: no amount of negative feedback can make an active descriptor unreachable. Retirement governs the season: a descriptor with sustained negative evidence leaves the active set and a new one takes its place.
+
+**The model sees no private data.** The prompt is built from descriptor strings and integer rating counts only — never task titles, peer identifiers, emoji, timestamps, or artifact paths. Descriptor strings are restricted to values present in the peer's active `reward_theme_pool` with origin `seed` or `evolved`; seed descriptors are repo-authored constants, and evolved descriptors passed `_sanitize_descriptor` before storage. This is the same discipline `_build_image_prompt` enforces.
+
+**Model output is untrusted** and passes the same `_sanitize_descriptor` checks as user preference text before it can be stored, plus a duplicate check against every value the peer has ever held, retired rows included. Rejected proposals are dropped with a count-only log.
+
+**Failure is inert.** An unreachable database, an LLM outage, and unparseable model output all leave the existing vocabulary exactly as it was. Proposals are built before any write, so nothing is touched until there is something to store. Insertion and retirement then run in one transaction on one connection, so a failure between them rolls back both rather than leaving retirements committed against insertions that never landed. The job never raises into the scheduler.
+
+**Early runs are closer to guided vocabulary expansion than to preference learning**, because 12 ratings is still 12 ratings. That is the intended tradeoff: novelty is the product goal and learned taste is the bonus. New descriptors enter at a neutral weight, so they are drawn at exactly baseline rate rather than being promoted on arrival.
+
+**Vocabulary size is a budget, not a feature.** Separating a liked descriptor from a disliked one takes roughly 40 ratings for that descriptor. At this system's volume that is reachable over a season only while the style and palette vocabularies stay around eight entries each. Every value added dilutes per-value evidence linearly, so growth is deliberate and bounded rather than open-ended. Repetition is addressed by recombination, not by longer lists.
+
+Layers 2, 3, and 4 are multipliers on the same per-axis weights, so a motif-suited descriptor the user also likes compounds. Every descriptor keeps a non-zero weight — the `_SELECTION_EPSILON` floor applies after every bias, so no layer can make a scene unreachable.
 
 ##### Task Motif Classification
 
@@ -291,6 +334,11 @@ The image is about what the user finished, and the task title still never leaves
 - Output is checked against the vocabulary allowlist. A task title is user-controlled text, so a title that tries to steer the classifier can at worst select a different celebration scene.
 - A blank title, an off-vocabulary answer, or a classifier failure yields no motif. The prompt then omits the motif line entirely and falls back to generic progress imagery — an unclassifiable task still earns its image.
 - Sensitive tasks are never classified. Their title is not sent to any model, and their imagery stays abstract.
+- Classification only runs when an image is actually possible. Without `OPENAI_API_KEY` there is no prompt to steer, and a model round-trip before a text-only fallback is latency the user pays for nothing — immediate gratification is the point of the reward.
+
+**How the motif reaches the picture.** It biases the theme axis and adds one scene line to the prompt. The bias is a multiplier on theme descriptors mapped to that motif, applied alongside the preference bonus and under the same novelty floor: a motif shifts which scene is likely, never which scenes are possible. Style and palette are untouched — they describe how the scene is rendered, not what was accomplished.
+
+The affinity map covers the seed vocabulary only. A descriptor added by the weekly evolution job carries no motif affinity and draws at its unbiased weight; relevance then rests on the motif line, which applies to every descriptor. Inferring affinity from descriptor text would mean matching against strings the model proposed, and a wrong match reads worse than no match.
 
 `_build_image_prompt()` assembles the selected theme-family, style, palette, motif phrase, streak marker count, humor level, and feedback guidance. It never embeds task text.
 
@@ -349,35 +397,37 @@ When the task classifier detects a private or shame-heavy completion (therapy, m
 
 #### Reward Preference Schema
 
-Canonical reward image preferences live in `user_prefs.rewards` (Postgres):
+Canonical reward image preferences live under key `rewards` in `user_prefs.prefs_json` (Postgres JSONB):
 
 ```json
 {
-  "user_preferences": {
-    "rewards": {
-      "preferred_styles": ["storybook watercolor", "paper collage illustration"],
-      "preferred_palettes": ["cozy pastel glow", "aurora jewel tones"],
-      "favorite_subjects": ["space", "cats", "nature"],
-      "avoid": ["medical literal", "spiders"],
-      "humor_level": "playful"
-    }
-  }
+  "preferred_styles": ["storybook watercolor", "paper collage illustration"],
+  "preferred_palettes": ["cozy pastel glow", "aurora jewel tones"],
+  "avoid": ["clinical imagery", "spiders"],
+  "favorite_subjects": ["deep space", "sleeping cats"],
+  "humor_level": "playful"
 }
 ```
+
+This object is what `load_reward_prefs` returns — it is the value of `prefs_json -> 'rewards'`, not a column of its own.
+
+Every value here passes `_sanitize_descriptor` before it reaches selection or the prompt, so a value the sanitizer rejects is silently a no-op rather than an error. Write preferences in its terms: lowercase words, spaces, commas, apostrophes and hyphens only; at most 8 words and 60 characters; and none of the banned terms, which include prompt-framing words (`ignore`, `system`, `text`, `caption`, `logo`), people (`person`, `child`, `celebrity`), and every sensitive-task keyword — `medical`, `therapy`, `legal`, and the rest. That last rule is why an avoid entry like "medical literal" stores fine and then does nothing.
 
 Supported preference dimensions:
 
 - **Styles** - e.g. watercolor, collage, 3D, graphic illustration
 - **Palettes** - warm, pastel, jewel-tone, neon, nature-led
-- **Subjects** - space, animals, nature, abstract, cozy. Applied as a soft prompt bias ("where it fits naturally"); the intensity tier and the task motif still decide the composition.
 - **Avoid list** - tags or vibes to suppress
 - **Humor level** - `subtle`, `playful`, or `maximal`
+- **Subjects** (`favorite_subjects`) - joins the theme vocabulary for the draw and is favored within it, the same way stated styles and palettes extend their own axes
 
-**Input constraint:** preference values are visual descriptors — art styles, palettes, and subject categories — and are enforced as such at runtime. `sanitize_reward_prefs()` reduces every dimension to an allowlist immediately before generation: styles and palettes must match the vocabulary the theme pools already use, subjects and avoid terms must match curated category lists, and `humor_level` must be one of the three defined values. Matching is case-insensitive and whitespace-trimmed, and the canonical vocabulary form is what reaches the prompt.
+**How preferences reach image generation:** `maybe_reward` loads the profile with `load_reward_prefs(peer)`, which reads `prefs_json -> 'rewards'` for that peer. A caller may pass preferences explicitly via the `user_prefs` argument instead — any non-`None` value (including `{}`) wins and no lookup happens; no caller in the graph passes this argument, so the stored profile is what runs in production. Preferences are read from Postgres at reward time rather than carried in LangGraph State, because State is the checkpoint unit — a copy living there would be persisted per conversation thread and drift from the table on every edit.
 
-Values outside the allowlist are dropped and never sent. The drop is logged as a count per dimension only — the dropped value is precisely the text suspected of carrying personal detail, so logging it would recreate the exposure the allowlist exists to prevent.
+The lookup fails open: a missing row, a missing or wrongly-typed `rewards` subtree, or a database error all yield an empty profile and neutral generation. A preferences failure never blocks a reward.
 
-Why this is enforced rather than documented: preference text is user-authored, and every one of these values is joined into the prompt sent to the external image provider. Styles and palettes additionally land on `reward_manifests` as `style` and `palette`, where ops queries read them. Because the allowlist runs before both, those columns now hold vocabulary the system chose.
+**Input constraint:** preference values are intended as visual descriptors — art styles, palettes, and subject categories — and must not contain personal detail. `preferred_styles`, `preferred_palettes`, and `favorite_subjects` are sanitized by `_sanitize_descriptor` before entering selection vocabularies; rejected values are dropped without content logging. The drawn descriptor — which may be a sanitized preference value or a seed constant — is persisted on `reward_manifests` as `style` and `palette`, so treat those manifest columns as user-influenced text in ops queries. See **Descriptors are untrusted input** below for the full sanitizer contract.
+
+Every preference dimension that reaches the prompt passes the same gate, not just the ones that become selection vocabulary. `avoid` terms are sanitized by the same function before they are joined into the prompt's avoid clause, and `humor_level` is validated against its three defined values rather than interpolated. Preferences only became live once `load_reward_prefs` started running for every eligible completion, which is what turned an unread column into text in front of the external image provider.
 
 #### Streak Enhancements
 
@@ -429,13 +479,28 @@ Two further columns describe the task-to-image relationship rather than the imag
 
 **Idempotency:** `feedback_at IS NULL` prevents double-counting. If a user reacts twice, only the first reaction for a given reward row is recorded. A later reaction may still match another unrated reward inside the tight timestamp window.
 
-**Weighted selection:** `load_feedback_history` loads recent rated rewards for the peer from the last 90 days. `_select_theme` builds the candidate set — the intensity's theme pool crossed with the user's preferred styles and palettes — and multiplies each candidate's motif affinity by `apply_feedback_weight`, which returns a multiplier in `[0.5, 1.5]`:
+**Weighted selection:** `load_feedback_history` loads recent rated rewards for the peer from the last 90 days. `_select_theme` then draws each axis separately with `_draw_attribute`, weighting the axis' vocabulary with `_attribute_weight`, then applying the stated-preference bonus and — on the theme axis — the task motif's affinity bonus.
 
-- A reaction contributes by match strength: theme `0.6`, style `0.3`, palette `0.1`.
-- Contributions decay linearly over 30 days; older ratings have no effect.
-- The total nudge is capped at ±0.5.
+For one descriptor on one axis, ratings that name that descriptor accumulate into decayed positive and negative counts:
 
-Selection is then a weighted random draw. Every candidate keeps a non-zero probability regardless of feedback: novelty is the mechanism the image system exists to provide, so feedback biases selection and never eliminates a theme. A single reaction shifts the odds slightly; a consistent pattern shifts them meaningfully.
+- Contributions decay exponentially with a 45-day half-life: a rating counts fully the day it is given, at half strength after 45 days, and at quarter strength at the 90-day edge of the load window. Ratings older than the window are not loaded at all.
+- Ratings scoring `0` (unknown emoji) are recorded as acknowledgment and contribute to neither count.
+- The counts combine into a Beta-smoothed success rate, scaled by how much evidence exists. With no ratings the weight is exactly `1.0`.
+- The result is bounded by a per-axis cap: theme `±0.25`, style `±0.50`, palette `±0.50`.
+
+The decay curve has no hard cutoff inside the window, so the load window is the only place a rating stops counting. Both numbers live in `app/tools/rewards.py` as `_FEEDBACK_WINDOW_DAYS` and `_FEEDBACK_HALF_LIFE_DAYS`, and the load window feeds `load_feedback_history`'s default so the two cannot drift apart.
+
+Why exponential rather than a fixed expiry: at this system's rating volume — a handful of image rewards a day, only some of them reacted to — a hard cutoff throws away most of the evidence the user has given. Gradual decay keeps old ratings contributing something while still letting recent taste dominate.
+
+Why theme is capped lowest: theme is the highest-cardinality axis and the one that rarely repeats, so it is where novelty is spent and where evidence is thinnest. Style and palette repeat constantly across rewards, so they are where preference can actually be learned, and they carry the larger caps.
+
+**The novelty floor.** Per-axis weights are normalized into a probability distribution and then mixed with a uniform distribution at `_SELECTION_EPSILON` (`0.15`). Every active descriptor therefore keeps at least `0.15 / vocabulary_size` probability, no matter how negative its history. This is what keeps habituation — the failure mode the image system exists to prevent — from creeping back in through feedback: within a draw, feedback biases selection and can never eliminate a descriptor. Because the floor bounds probability directly rather than bounding a weight, it holds unchanged as vocabularies grow. A single reaction shifts the odds slightly; a consistent pattern shifts them meaningfully; no active descriptor's odds ever reach zero.
+
+The floor is a property of the draw, and it applies to the active vocabulary. Membership of that vocabulary is decided elsewhere, on a much slower clock: the weekly `theme_evolution` job retires descriptors with sustained negative evidence and adds new ones at a faster rate than it retires. See **Vocabulary Evolution** for why removal is permitted there and what bounds it.
+
+**Stated preferences bias, they do not dictate.** `preferred_styles`, `preferred_palettes`, and `favorite_subjects` are appended to their axis' vocabulary and receive a `1.5` weight multiplier. They do not replace the vocabulary — a single stated style would otherwise appear on every image, removing style novelty entirely.
+
+**Descriptors are untrusted input.** Every preference-derived value passes `_sanitize_descriptor` before it can reach a vocabulary: NFKC normalization, rejection of line breaks and control characters, a length and word-count bound, a character allowlist of `a-z 0-9 space comma apostrophe hyphen`, and rejection of instruction verbs, text-rendering terms, identity terms, and sensitive keywords. The character allowlist is the control that matters — it removes every character usable to break out of the `Theme: {x}.` framing in `_build_image_prompt`; the term lists are defense in depth and are not assumed complete. Rejected values are dropped silently and logged as a count only, never as content.
 
 **Prompt guidance:** Image generation additionally summarizes feedback in the prompt only after at least three ratings:
 
@@ -449,11 +514,12 @@ The prompt guidance is intentionally short and coarse so feedback nudges future 
 
 Image generation system inherently addresses novelty:
 
-1. **Weighted theme selection** - each intensity has 5+ themes, with preferences and bounded feedback nudging rather than dictating the outcome; no theme is ever permanently excluded
-2. **Task motifs** - the accomplished task changes the scene, both by biasing which theme is drawn and by adding its own scene line, so the same intensity tier reads differently across different kinds of work
-3. **AI variation** - same prompt produces different images each time
-4. **Streak-responsive** - visual elements change as streaks grow
-5. **Expandable pools** - new themes, styles, and palettes can be added without changing the delivery contract
+1. **Independent axis draws** - theme, style, and palette are drawn separately, so each intensity reaches the product of its three vocabularies (currently 5 x 8 x 8 = 320 combinations) rather than a fixed list of triples
+2. **Weighted selection with a floor** - preferences, task motif, and bounded feedback nudge each axis rather than dictating it, and the `_SELECTION_EPSILON` uniform mixture guarantees every active descriptor keeps at least `0.15 / vocabulary_size` probability; no bias can drive an active descriptor's odds to zero
+3. **Task motifs** - the accomplished task changes the scene, both by favoring theme descriptors that suit it and by adding its own scene line, so the same intensity tier reads differently across different kinds of work
+4. **AI variation** - same prompt produces different images each time
+5. **Streak-responsive** - visual elements change as streaks grow
+6. **Evolving pools** - the weekly `theme_evolution` job grows each axis faster than it retires from it, so the reachable combination count rises over time while descriptors the user consistently dislikes drop out
 
 #### Graceful Degradation — Offline Fallback Rewards
 

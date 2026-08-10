@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import time
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -106,9 +108,10 @@ _SENSITIVE_KEYWORDS: frozenset[str] = frozenset([
 def is_sensitive_task(task_title: str) -> bool:
     """Classify whether a task title is sensitive (private/shame-heavy).
 
-    Sensitive tasks receive muted emoji text only:
-    - no motif classification — the title is sent to no model
-    - no image generation, and no abstract fallback image
+    Sensitive tasks receive suppressed or muted rewards:
+    - task_mode forced to metaphorical
+    - no literal task artifacts in imagery
+    - humor forced to subtle
 
     Args:
         task_title: Task title string (private — not logged by this function).
@@ -271,35 +274,104 @@ def get_fallback_reward() -> str:
 # docs/reward-system.md: AI-Generated Celebration Images section
 # ---------------------------------------------------------------------------
 
-class ThemeEntry(TypedDict):
-    """One entry in a theme pool.
+# Theme, style, and palette are drawn independently rather than as welded
+# triples. Two reasons:
+#
+#   Combinations. Five triples per intensity is five reachable images, and
+#   habituation is the failure mode the image system exists to prevent. The
+#   same strings, drawn independently, reach 5 x 8 x 8 = 320.
+#
+#   Learning. Welded triples make every attribute exactly as sparse as the
+#   rarest one, so no attribute can ever accumulate enough ratings to mean
+#   anything. Split apart, one rating updates three parameters, and style and
+#   palette pool their observations across all four intensities.
+#
+# Style and palette are deliberately intensity-agnostic: scoping them per
+# intensity would quarter their observation rate, which is the whole reason
+# they are the axes that can learn. The theme string and the prompt's mood
+# line carry the intensity semantics instead.
+_SEED_THEMES: dict[str, list[str]] = {
+    "low": [
+        "cheerful bird with sparkle",
+        "paper airplane soaring through clouds",
+        "happy cat in sunbeam",
+        "small garden with blooming flowers",
+        "cozy reading nook with warm light",
+    ],
+    "medium": [
+        "fox dancing in wildflowers",
+        "confetti explosion in bright colors",
+        "otter sliding down rainbow waterfall",
+        "butterfly emerging from cocoon in golden light",
+        "mountain summit with celebration flags",
+    ],
+    "high": [
+        "phoenix rising from golden flames",
+        "astronaut planting flag on colorful planet",
+        "whale breaching in starfield",
+        "ancient temple lit by aurora borealis",
+        "eagle soaring above mountain range at dawn",
+    ],
+    "epic": [
+        "galaxy forming crown of light",
+        "reality folding into cathedral of light",
+        "cosmic phoenix ascending through dimensional portal",
+        "universe crystallizing into perfect order",
+        "ancient forest where trees become stars",
+    ],
+}
 
-    motifs: the task motifs this scene reads as a celebration of. Selection is
-        biased toward entries whose motifs match the completed task, which is
-        what makes a generated image recognisably about the thing that earned
-        it. Every motif matches at least one entry in every intensity pool, so
-        the bias never collapses the pool to a single candidate.
-    """
-    theme: str
-    style: str
-    palette: str
-    motifs: frozenset[str]
+# Consolidated from the 18 distinct styles the welded triples carried. Fewer,
+# broader values on purpose: distinguishing a liked style from a disliked one
+# needs roughly 40 ratings for that style, so vocabulary size is a budget, not
+# a feature. These eight span the range the original 18 covered.
+_SEED_STYLES: list[str] = [
+    "watercolor",
+    "paper collage",
+    "storybook illustration",
+    "impressionist painting",
+    "bold graphic illustration",
+    "cartoon",
+    "digital concept art",
+    "oil painting",
+]
+
+# Consolidated from the 20 distinct palettes the welded triples carried, kept
+# to eight for the same reason. Spans warm, cool, deep, and bright.
+_SEED_PALETTES: list[str] = [
+    "warm pastel",
+    "soft blue",
+    "nature green",
+    "amber gold",
+    "jewel tones",
+    "cosmic purple",
+    "midnight blue",
+    "iridescent prism",
+]
+
+_SENSITIVE_THEMES: list[dict[str, str]] = [
+    {"theme": "abstract geometric pattern expanding outward", "style": "minimalist", "palette": "calm blue-grey"},
+    {"theme": "smooth river stones arranged in peaceful pattern", "style": "zen illustration", "palette": "earth tones"},
+    {"theme": "gentle light through frosted glass", "style": "abstract", "palette": "soft white"},
+    {"theme": "growing seedling in quiet soil", "style": "simple illustration", "palette": "natural green"},
+    {"theme": "single candle flame in dark, steady and bright", "style": "minimal", "palette": "warm amber"},
+]
 
 
 # Task motif vocabulary. Values are the scene-direction phrase handed to the
 # image model; keys are the only labels classify_task_motif() may return.
 #
 # Privacy: the motif label is the ONLY task-derived signal that reaches the
-# image provider. Classification runs on the local LLM proxy, the phrases below
+# image provider. Classification runs on the local LLM tier, the phrases below
 # are fixed generic English, and no task text is ever interpolated into them —
 # so nothing identifying leaves the tailnet even though the image is now about
-# the task. See docs/reward-system.md: Prompt Personalization Pipeline.
+# the task. See docs/reward-system.md: Task Motif Classification.
 _MOTIFS: dict[str, str] = {
     "errand": "a journey completed — something fetched and carried home",
     "communication": "a message sent and answered — a connection made",
     "cleanup": "order restored out of clutter",
     "repair": "something broken made whole again",
-    "admin": "a stack of obligations finally cleared away",
+    "admin": "a stack of obligations cleared away",
     "creative": "something new brought into being",
     "movement": "a body in motion, distance covered",
     "learning": "a path walked toward understanding",
@@ -307,176 +379,172 @@ _MOTIFS: dict[str, str] = {
     "social": "two figures meeting on good terms",
 }
 
-# Multiplier applied to candidates whose motifs match the classified task.
-# With two or three matching entries in a five-entry pool this puts roughly
-# three quarters of the probability mass on a fitting scene while leaving every
-# other theme reachable — novelty is a hard requirement of
-# docs/reward-system.md. An unmatched draw is not a wrong image either: the
-# motif line still tells the model what is being celebrated.
-_MOTIF_AFFINITY_BOOST = 4.0
-
-# Ceiling on glowing progress markers in the prompt. The spec asks for one per
-# completed task in the streak; past roughly a dozen the model stops rendering
-# them as countable objects and the composition suffers, so the ask is capped.
-_MAX_STREAK_MARKERS = 10
-
-_THEME_POOLS: dict[str, list[ThemeEntry]] = {
-    "low": [
-        {"theme": "cheerful bird with sparkle", "style": "watercolor", "palette": "warm pastel",
-         "motifs": frozenset({"communication", "social"})},
-        {"theme": "paper airplane soaring through clouds", "style": "paper collage", "palette": "soft blue",
-         "motifs": frozenset({"communication", "errand", "movement"})},
-        {"theme": "happy cat in sunbeam", "style": "storybook illustration", "palette": "cozy warm",
-         "motifs": frozenset({"cleanup", "repair"})},
-        {"theme": "small garden with blooming flowers", "style": "watercolor", "palette": "nature green",
-         "motifs": frozenset({"creative", "learning", "planning"})},
-        {"theme": "cozy reading nook with warm light", "style": "impressionist", "palette": "amber glow",
-         "motifs": frozenset({"learning", "admin"})},
-    ],
-    "medium": [
-        {"theme": "fox dancing in wildflowers", "style": "vibrant illustration", "palette": "jewel tones",
-         "motifs": frozenset({"social", "movement", "communication"})},
-        {"theme": "confetti explosion in bright colors", "style": "graphic art", "palette": "rainbow",
-         "motifs": frozenset({"admin", "social", "cleanup"})},
-        {"theme": "otter sliding down rainbow waterfall", "style": "cartoon", "palette": "neon pastel",
-         "motifs": frozenset({"movement", "errand"})},
-        {"theme": "butterfly emerging from cocoon in golden light", "style": "watercolor", "palette": "golden",
-         "motifs": frozenset({"creative", "learning", "repair"})},
-        {"theme": "mountain summit with celebration flags", "style": "adventure illustration", "palette": "crisp blue",
-         "motifs": frozenset({"planning", "learning"})},
-    ],
-    "high": [
-        {"theme": "phoenix rising from golden flames", "style": "majestic illustration", "palette": "fire gold",
-         "motifs": frozenset({"repair", "creative"})},
-        {"theme": "astronaut planting flag on colorful planet", "style": "space art", "palette": "cosmic purple",
-         "motifs": frozenset({"planning", "learning", "errand"})},
-        {"theme": "whale breaching in starfield", "style": "surreal art", "palette": "midnight blue",
-         "motifs": frozenset({"movement", "creative", "social"})},
-        {"theme": "ancient temple lit by aurora borealis", "style": "epic landscape", "palette": "aurora jewel",
-         "motifs": frozenset({"cleanup", "admin"})},
-        {"theme": "eagle soaring above mountain range at dawn", "style": "realistic", "palette": "sunrise red",
-         "motifs": frozenset({"errand", "movement", "communication"})},
-    ],
-    "epic": [
-        {"theme": "galaxy forming crown of light", "style": "cosmic art", "palette": "nebula purple",
-         "motifs": frozenset({"admin", "planning"})},
-        {"theme": "reality folding into cathedral of light", "style": "transcendent digital art", "palette": "iridescent",
-         "motifs": frozenset({"creative", "learning", "communication"})},
-        {"theme": "cosmic phoenix ascending through dimensional portal", "style": "epic sci-fi", "palette": "gold and violet",
-         "motifs": frozenset({"repair", "movement", "errand"})},
-        {"theme": "universe crystallizing into perfect order", "style": "abstract cosmic", "palette": "prismatic",
-         "motifs": frozenset({"cleanup", "admin"})},
-        {"theme": "ancient forest where trees become stars", "style": "mythic illustration", "palette": "silver and emerald",
-         "motifs": frozenset({"social", "creative"})},
-    ],
+# Seed theme descriptors that suit each motif. Selection favors these when the
+# completed task carries that motif, which is what makes the composition — not
+# just the appended scene line — reflect the work that earned it.
+#
+# This maps only the seed vocabulary. A peer's stored vocabulary evolves under
+# app/scheduler/theme_evolution.py, and an evolved descriptor simply has no
+# motif affinity: it draws at its unbiased weight. Relevance then rests on the
+# motif line in the prompt, which applies to every descriptor. Keeping the map
+# static is deliberate — inferring affinity from descriptor text would mean
+# matching against strings the model proposed, and a wrong match is worse than
+# no match.
+_MOTIF_THEME_AFFINITY: dict[str, frozenset[str]] = {
+    "errand": frozenset({
+        "paper airplane soaring through clouds",
+        "otter sliding down rainbow waterfall",
+        "astronaut planting flag on colorful planet",
+        "eagle soaring above mountain range at dawn",
+        "cosmic phoenix ascending through dimensional portal",
+    }),
+    "communication": frozenset({
+        "cheerful bird with sparkle",
+        "paper airplane soaring through clouds",
+        "fox dancing in wildflowers",
+        "eagle soaring above mountain range at dawn",
+        "reality folding into cathedral of light",
+    }),
+    "cleanup": frozenset({
+        "happy cat in sunbeam",
+        "confetti explosion in bright colors",
+        "ancient temple lit by aurora borealis",
+        "universe crystallizing into perfect order",
+    }),
+    "repair": frozenset({
+        "happy cat in sunbeam",
+        "butterfly emerging from cocoon in golden light",
+        "phoenix rising from golden flames",
+        "cosmic phoenix ascending through dimensional portal",
+    }),
+    "admin": frozenset({
+        "cozy reading nook with warm light",
+        "confetti explosion in bright colors",
+        "ancient temple lit by aurora borealis",
+        "galaxy forming crown of light",
+        "universe crystallizing into perfect order",
+    }),
+    "creative": frozenset({
+        "small garden with blooming flowers",
+        "butterfly emerging from cocoon in golden light",
+        "phoenix rising from golden flames",
+        "whale breaching in starfield",
+        "reality folding into cathedral of light",
+        "ancient forest where trees become stars",
+    }),
+    "movement": frozenset({
+        "paper airplane soaring through clouds",
+        "fox dancing in wildflowers",
+        "otter sliding down rainbow waterfall",
+        "whale breaching in starfield",
+        "eagle soaring above mountain range at dawn",
+        "cosmic phoenix ascending through dimensional portal",
+    }),
+    "learning": frozenset({
+        "small garden with blooming flowers",
+        "cozy reading nook with warm light",
+        "butterfly emerging from cocoon in golden light",
+        "mountain summit with celebration flags",
+        "astronaut planting flag on colorful planet",
+        "reality folding into cathedral of light",
+    }),
+    "planning": frozenset({
+        "small garden with blooming flowers",
+        "mountain summit with celebration flags",
+        "astronaut planting flag on colorful planet",
+        "galaxy forming crown of light",
+    }),
+    "social": frozenset({
+        "cheerful bird with sparkle",
+        "fox dancing in wildflowers",
+        "confetti explosion in bright colors",
+        "whale breaching in starfield",
+        "ancient forest where trees become stars",
+    }),
 }
 
-# Sensitive themes carry no motifs: the guardrail requires abstract imagery with
-# no readable connection to what the task was.
-_SENSITIVE_THEMES: list[ThemeEntry] = [
-    {"theme": "abstract geometric pattern expanding outward", "style": "minimalist", "palette": "calm blue-grey",
-     "motifs": frozenset()},
-    {"theme": "smooth river stones arranged in peaceful pattern", "style": "zen illustration", "palette": "earth tones",
-     "motifs": frozenset()},
-    {"theme": "gentle light through frosted glass", "style": "abstract", "palette": "soft white",
-     "motifs": frozenset()},
-    {"theme": "growing seedling in quiet soil", "style": "simple illustration", "palette": "natural green",
-     "motifs": frozenset()},
-    {"theme": "single candle flame in dark, steady and bright", "style": "minimal", "palette": "warm amber",
-     "motifs": frozenset()},
-]
 
+# Descriptors reach the image prompt verbatim, and their sources are not
+# trustworthy: user-authored preference text today, LLM-proposed values later.
+# The character allowlist is the control that actually works — it removes every
+# character usable to break out of the "Theme: {x}." framing in
+# _build_image_prompt (newlines, colons, braces, brackets, quotes, backticks,
+# parentheses). The term lists below are defense in depth and will always be
+# incomplete; do not rely on them alone.
+_DESCRIPTOR_ALLOWED = re.compile(r"^[a-z0-9 ,'-]+$")
+_DESCRIPTOR_MAX_CHARS = 60
+_DESCRIPTOR_MAX_WORDS = 8
 
-# ---------------------------------------------------------------------------
-# Preference allowlists
-#
-# Reward preferences are user-authored free text. Every one of these values is
-# joined into the prompt sent to the external image provider, so an unvetted
-# preference is a private-data egress waiting for someone to type a name into
-# their "favorite subjects". Styles and palettes additionally land on the
-# manifest row, where ops queries read them.
-#
-# Styles and palettes are allowlisted against the vocabulary the theme pools
-# already use — a preference is a request to weight what we can draw, not to
-# invent a new descriptor. Subjects and avoid terms get curated category lists.
-# Unmatched values are dropped, never sent.
-# ---------------------------------------------------------------------------
-
-_ALLOWED_STYLES: frozenset[str] = frozenset(
-    entry["style"] for pool in _THEME_POOLS.values() for entry in pool
-)
-_ALLOWED_PALETTES: frozenset[str] = frozenset(
-    entry["palette"] for pool in _THEME_POOLS.values() for entry in pool
-)
-
-_ALLOWED_SUBJECTS: frozenset[str] = frozenset([
-    "space", "animals", "cats", "dogs", "birds", "sea life", "nature", "plants",
-    "flowers", "trees", "mountains", "ocean", "weather", "abstract", "geometric",
-    "cozy", "food", "architecture", "music", "books", "vehicles", "machines",
-    "mythology", "seasons", "landscapes",
-])
-
-_ALLOWED_AVOID: frozenset[str] = frozenset([
-    "spiders", "insects", "snakes", "clowns", "crowds", "gore", "horror",
-    "medical", "needles", "hospitals", "money", "paperwork", "fire", "deep water",
-    "heights", "darkness", "text", "faces", "religious imagery", "weapons",
+_BANNED_DESCRIPTOR_TERMS: frozenset[str] = frozenset([
+    # Instruction verbs — an attempt to address the image model directly.
+    "ignore", "instead", "disregard", "override", "prompt", "system",
+    # Text rendering — the prompt already forbids lettering; a descriptor
+    # asking for it is either an attack or a guaranteed bad image.
+    "text", "word", "letter", "caption", "logo", "watermark", "signature",
+    # Identity — celebration art depicts no one in particular.
+    "person", "child", "nude", "celebrity",
 ])
 
 
-def _allowlisted(values: Any, allowed: frozenset[str], *, dimension: str) -> list[str]:
-    """Keep only preference values present in `allowed`.
+def _sanitize_descriptor(value: Any) -> str | None:
+    """Normalize an untrusted theme/style/palette descriptor, or reject it.
 
-    Matching is case-insensitive and whitespace-trimmed; the canonical
-    lowercase form is returned so what reaches the prompt is vocabulary we
-    chose, not text the user typed.
-
-    Dropped values are counted, never logged — the dropped value is exactly the
-    text suspected of carrying personal detail.
+    Returns the cleaned descriptor, or None if it fails any check. Callers drop
+    rejects silently and log a count only — the value itself may be
+    user-authored text and must never reach a log.
     """
-    if not isinstance(values, (list, tuple)):
+    if not isinstance(value, str):
+        return None
+
+    normalized = unicodedata.normalize("NFKC", value)
+
+    # Reject line breaks and control characters outright rather than folding
+    # them into spaces. Collapsing first would silently rewrite an injection
+    # attempt into an accepted descriptor, which is both a weaker defense and
+    # a surprising one — the stored value would not be what anyone wrote.
+    if any(ch.isspace() and ch != " " for ch in normalized):
+        return None
+    if any(unicodedata.category(ch).startswith("C") for ch in normalized):
+        return None
+
+    cleaned = " ".join(part for part in normalized.split(" ") if part).lower()
+    if not cleaned or len(cleaned) > _DESCRIPTOR_MAX_CHARS:
+        return None
+
+    words = cleaned.split(" ")
+    if len(words) > _DESCRIPTOR_MAX_WORDS:
+        return None
+
+    if not _DESCRIPTOR_ALLOWED.match(cleaned):
+        return None
+
+    if any(term in cleaned for term in _BANNED_DESCRIPTOR_TERMS):
+        return None
+
+    # Sensitive subject matter is handled by a separate locked pool; a
+    # preference must not smuggle it into the ordinary path.
+    if any(keyword in cleaned for keyword in _SENSITIVE_KEYWORDS):
+        return None
+
+    return cleaned
+
+
+def _sanitized_list(values: Any) -> list[str]:
+    """Sanitize a preference list, dropping rejects with a count-only log."""
+    if not isinstance(values, list):
         return []
 
     kept: list[str] = []
-    dropped = 0
     for value in values:
-        if not isinstance(value, str):
-            dropped += 1
-            continue
-        normalized = value.strip().lower()
-        if normalized in allowed:
-            kept.append(normalized)
-        else:
-            dropped += 1
+        cleaned = _sanitize_descriptor(value)
+        if cleaned is not None and cleaned not in kept:
+            kept.append(cleaned)
 
-    if dropped:
-        log.info("reward_prefs.values_dropped", dimension=dimension, dropped=dropped)
+    rejected = len(values) - len(kept)
+    if rejected > 0:
+        # Count only. The rejected values are user-authored text.
+        log.info("reward_descriptor.rejected", count=rejected)
     return kept
-
-
-def sanitize_reward_prefs(prefs: dict[str, Any] | None) -> dict[str, Any]:
-    """Reduce reward preferences to values safe to send to the image provider.
-
-    Applied at the point of use rather than at load, so every caller of
-    generate_reward_image() is covered regardless of where its prefs came from.
-
-    `humor_level` is a closed set of three values, so it is validated rather
-    than allowlisted; anything else falls back to the default.
-    """
-    prefs = prefs or {}
-    humor = prefs.get("humor_level")
-    return {
-        "preferred_styles": _allowlisted(
-            prefs.get("preferred_styles"), _ALLOWED_STYLES, dimension="styles"
-        ),
-        "preferred_palettes": _allowlisted(
-            prefs.get("preferred_palettes"), _ALLOWED_PALETTES, dimension="palettes"
-        ),
-        "favorite_subjects": _allowlisted(
-            prefs.get("favorite_subjects"), _ALLOWED_SUBJECTS, dimension="subjects"
-        ),
-        "avoid": _allowlisted(prefs.get("avoid"), _ALLOWED_AVOID, dimension="avoid"),
-        "humor_level": humor if humor in ("subtle", "playful", "maximal") else "subtle",
-    }
 
 
 _MOTIF_SYSTEM_PROMPT = f"""You label a completed to-do task with ONE motif.
@@ -496,17 +564,21 @@ async def classify_task_motif(task_title: str) -> str:
     """Classify a completed task into one motif label from _MOTIFS.
 
     Runs on the cheap tier, which routes to a think=false configuration in
-    app/models.py — this needs a label, not reasoning. The tier points at the
-    local LiteLLM proxy, so the task title stays inside the tailnet; only the
-    resulting generic label travels onward to the image provider.
+    app/models.py — this needs a label, not reasoning.
+
+    The task title is private and this is the only place it is sent to a model
+    on the reward path. That is acceptable only while the tier stays on the
+    tailnet, so the tier's model family is checked rather than assumed:
+    setup/model-tiers.json can be repointed at an external provider without
+    touching this file.
 
     Prompt-injection containment: the output is checked against the fixed
     _MOTIFS allowlist, so a task title that tries to steer the model can at
     worst pick a different motif than the one it earned.
 
-    Returns the motif key, or "" for a blank title, an unrecognised label, or
-    any failure. Never raises — a missing motif degrades the prompt to the
-    generic form rather than costing the user their image.
+    Returns the motif key, or "" for a blank title, a non-local tier, an
+    unrecognised label, or any failure. Never raises — a missing motif degrades
+    the prompt to the generic form rather than costing the user their image.
     """
     if not task_title.strip():
         return ""
@@ -516,11 +588,6 @@ async def classify_task_motif(task_title: str) -> str:
 
         from app.models import is_local_tier, llm
 
-        # The whole reason this caller may see the task title is that the tier
-        # stays on the tailnet. setup/model-tiers.json can be swapped to an
-        # external provider without touching this file, so the promise is
-        # checked here rather than assumed. A non-local tier costs a themed
-        # image, never the title.
         if not is_local_tier("cheap"):
             log.warning("reward_motif.non_local_tier")
             return ""
@@ -552,72 +619,222 @@ async def classify_task_motif(task_title: str) -> str:
         return ""
 
 
+# Selection tuning. See docs/reward-system.md: Weighted Selection.
+#
+# Per-axis nudge caps, deliberately inverted from the old match weights
+# (theme 0.6, style 0.3, palette 0.1). Theme is the highest-cardinality axis
+# and the one that rarely repeats, so it is where novelty is spent and where
+# feedback should push least. Style and palette repeat constantly, so they are
+# where evidence actually accumulates.
+_AXIS_NUDGE_CAP: dict[str, float] = {
+    "theme_family": 0.25,
+    "style": 0.50,
+    "palette": 0.50,
+}
+
+# Beta(1,1) prior: an unrated value sits at p=0.5, neither favored nor punished.
+_FEEDBACK_PRIOR = 1.0
+# Confidence half-saturation: a value needs ~3 effective ratings before its
+# estimate carries half its potential weight. Keeps one reaction from swinging
+# selection.
+_FEEDBACK_CONFIDENCE_SCALE = 3.0
+# Share of every draw reserved for a uniform pick. This is the novelty floor:
+# no active value can fall below _SELECTION_EPSILON / len(vocabulary),
+# regardless of how lopsided the feedback gets.
+_SELECTION_EPSILON = 0.15
+# Multiplier applied to values the user explicitly asked for. Preferences bias
+# the draw; they do not replace the vocabulary, because a single stated style
+# would otherwise appear on every image and eliminate style novelty outright.
+_PREFERENCE_BONUS = 1.5
+# Multiplier applied to theme descriptors that suit the completed task's motif.
+# Deliberately close to _PREFERENCE_BONUS and applied to one axis only: the
+# theme axis carries the smallest feedback nudge cap precisely because it is
+# where novelty is spent, and relevance must not undo that. A motif shifts
+# which scene is likely, and the _SELECTION_EPSILON floor still guarantees
+# every descriptor stays reachable.
+_MOTIF_BONUS = 2.0
+# Ceiling on glowing progress markers in the prompt. The spec asks for one per
+# completed task in the streak; past roughly a dozen the model stops rendering
+# them as countable objects and the composition suffers, so the ask is capped.
+_MAX_STREAK_MARKERS = 10
+
+
+def _attribute_weight(
+    feedback_history: list[dict[str, Any]],
+    *,
+    axis: str,
+    value: str,
+) -> float:
+    """Weight for one descriptor on one axis, from decayed rating counts.
+
+    Positive and negative ratings accumulate separately with time decay, then
+    combine into a Beta-smoothed success rate scaled by how much evidence
+    exists. With no ratings the result is exactly 1.0, so an unrated value is
+    drawn at the same rate as any other — cold start is a uniform draw.
+    """
+    positives = 0.0
+    negatives = 0.0
+
+    for entry in feedback_history:
+        if entry.get(axis, "") != value:
+            continue
+        score = entry.get("score", 0)
+        if not score:
+            # Unknown emoji: recorded as acknowledgment, carries no direction.
+            continue
+
+        try:
+            entry_ts = datetime.fromisoformat(
+                str(entry.get("timestamp", "")).replace("Z", "+00:00")
+            )
+            age_days = (datetime.now(UTC) - entry_ts).total_seconds() / 86400.0
+        except (ValueError, TypeError, AttributeError):
+            age_days = float(_FEEDBACK_WINDOW_DAYS)
+
+        decay = _feedback_decay(age_days)
+        if score > 0:
+            positives += decay
+        else:
+            negatives += decay
+
+    observed = positives + negatives
+    if observed == 0:
+        return 1.0
+
+    success_rate = (positives + _FEEDBACK_PRIOR) / (observed + 2 * _FEEDBACK_PRIOR)
+    confidence = observed / (observed + _FEEDBACK_CONFIDENCE_SCALE)
+    cap = _AXIS_NUDGE_CAP[axis]
+
+    return 1.0 + cap * (2 * success_rate - 1) * confidence
+
+
+def _draw_attribute(
+    vocabulary: list[str],
+    *,
+    axis: str,
+    feedback_history: list[dict[str, Any]],
+    preferred: frozenset[str] = frozenset(),
+    suited: frozenset[str] = frozenset(),
+) -> str:
+    """Draw one descriptor, biased by feedback but never locked to one value.
+
+    Weights are mixed with a uniform distribution at _SELECTION_EPSILON, which
+    is what enforces the novelty floor: every value keeps at least
+    _SELECTION_EPSILON / len(vocabulary) probability no matter how negative its
+    history. docs/reward-system.md treats habituation as the failure mode the
+    image system exists to prevent, so feedback may bias a draw and may never
+    zero one out.
+
+    The floor covers the vocabulary it is handed. Which descriptors are in that
+    vocabulary is decided on a slower clock by app/scheduler/theme_evolution.py,
+    which retires values with sustained negative evidence and adds new ones
+    faster than it retires. See "Vocabulary Evolution" in docs/reward-system.md.
+
+    `suited` holds the descriptors that fit the completed task's motif. It is a
+    bias like `preferred`, applied through the same weights and subject to the
+    same floor — relevance shifts which scene is likely, never which scenes are
+    possible. An empty `suited` leaves the distribution untouched.
+    """
+    weights = []
+    for value in vocabulary:
+        weight = _attribute_weight(feedback_history, axis=axis, value=value)
+        if value in preferred:
+            weight *= _PREFERENCE_BONUS
+        if value in suited:
+            weight *= _MOTIF_BONUS
+        weights.append(weight)
+
+    total = sum(weights)
+    uniform = 1.0 / len(vocabulary)
+    if total <= 0:
+        probabilities = [uniform] * len(vocabulary)
+    else:
+        probabilities = [
+            (1 - _SELECTION_EPSILON) * (w / total) + _SELECTION_EPSILON * uniform
+            for w in weights
+        ]
+
+    return random.choices(vocabulary, weights=probabilities, k=1)[0]
+
+
 def _select_theme(
     *,
     intensity: str,
     sensitive_task: bool = False,
     user_prefs: dict[str, Any] | None = None,
     feedback_history: list[dict[str, Any]] | None = None,
+    vocabulary: dict[str, list[str]] | None = None,
     motif: str = "",
 ) -> dict[str, str]:
-    """Pick a theme/style/palette, biased by task motif and prior feedback.
+    """Pick a theme/style/palette, biased by prior emoji-reaction feedback.
 
-    Candidates are the intensity's theme pool crossed with the user's preferred
-    styles and palettes (when set). Each candidate weight is the product of two
-    independent factors:
+    Each axis is drawn independently from its own vocabulary, so the reachable
+    combinations are the product of the three rather than a fixed list of
+    triples. Stated preferences extend a vocabulary and get a bonus; they do
+    not replace it, because a single stated style would otherwise appear on
+    every image and remove style novelty entirely.
 
-    - apply_feedback_weight(), which decays over 30 days and is capped at
-      +/-0.5 — so feedback nudges selection without ever locking it to one theme
-    - _MOTIF_AFFINITY_BOOST when the candidate's scene suits the completed
-      task's motif — this is what stops a grocery run from drawing an ancient
-      temple lit by aurora borealis
+    `vocabulary` is the peer's stored descriptor set when one is available.
+    Omitted or None falls back to the seed constants, so selection keeps
+    working when the database does not.
 
-    Novelty is a hard requirement of docs/reward-system.md, so every candidate
-    keeps a non-zero chance of being selected. An empty motif reproduces the
-    unbiased behavior exactly.
+    `motif` is the completed task's classified motif. It biases the theme axis
+    only: theme is what carries the scene, while style and palette describe how
+    it is rendered and have nothing to do with what the user finished. An empty
+    or unknown motif leaves every distribution exactly as it would be without
+    one.
 
     Returns a dict with theme_family / style / palette keys.
     """
-    prefs = user_prefs or {}
+    history = feedback_history or []
 
     if sensitive_task:
-        pool = _SENSITIVE_THEMES
-        # Sensitive tasks ignore user style/palette prefs and the task motif —
-        # the guardrail allowlist wins, and abstract imagery must stay
-        # unreadable (docs/reward-system.md: Sensitive Task Guardrail).
-        styles: list[str] = []
-        palettes: list[str] = []
-        motif = ""
-    else:
-        pool = _THEME_POOLS.get(intensity, _THEME_POOLS["low"])
-        styles = list(prefs.get("preferred_styles") or [])
-        palettes = list(prefs.get("preferred_palettes") or [])
+        # The guardrail allowlist wins outright: fixed triples, no preferences,
+        # no feedback weighting, and — by returning here — no stored vocabulary
+        # of any kind. Sensitive rewards cannot be steered by stored content,
+        # however that content got there.
+        chosen = random.choice(_SENSITIVE_THEMES)
+        return {
+            "theme_family": chosen["theme"],
+            "style": chosen["style"],
+            "palette": chosen["palette"],
+        }
 
-    candidates: list[dict[str, str]] = []
-    weights: list[float] = []
-    for theme in pool:
-        affinity = (
-            _MOTIF_AFFINITY_BOOST if motif and motif in theme["motifs"] else 1.0
-        )
-        for style in styles or [theme["style"]]:
-            for palette in palettes or [theme["palette"]]:
-                candidate = {
-                    "theme_family": theme["theme"],
-                    "style": style,
-                    "palette": palette,
-                }
-                candidates.append(candidate)
-                weights.append(
-                    affinity
-                    * apply_feedback_weight(
-                        feedback_history or [],
-                        theme_family=candidate["theme_family"],
-                        style=candidate["style"],
-                        palette=candidate["palette"],
-                    )
-                )
+    prefs = user_prefs or {}
+    preferred_styles = _sanitized_list(prefs.get("preferred_styles"))
+    preferred_palettes = _sanitized_list(prefs.get("preferred_palettes"))
+    favorite_subjects = _sanitized_list(prefs.get("favorite_subjects"))
 
-    return random.choices(candidates, weights=weights, k=1)[0]
+    stored = vocabulary or {}
+    themes = stored.get("theme") or _SEED_THEMES.get(intensity, _SEED_THEMES["low"])
+    styles = stored.get("style") or _SEED_STYLES
+    palettes = stored.get("palette") or _SEED_PALETTES
+    return {
+        "theme_family": _draw_attribute(
+            _extend(themes, favorite_subjects),
+            axis="theme_family",
+            feedback_history=history,
+            preferred=frozenset(favorite_subjects),
+            suited=_MOTIF_THEME_AFFINITY.get(motif, frozenset()),
+        ),
+        "style": _draw_attribute(
+            _extend(styles, preferred_styles),
+            axis="style",
+            feedback_history=history,
+            preferred=frozenset(preferred_styles),
+        ),
+        "palette": _draw_attribute(
+            _extend(palettes, preferred_palettes),
+            axis="palette",
+            feedback_history=history,
+            preferred=frozenset(preferred_palettes),
+        ),
+    }
+
+
+def _extend(base: list[str], extra: list[str]) -> list[str]:
+    """Base vocabulary plus any stated values it does not already contain."""
+    return base + [value for value in extra if value not in base]
 
 
 def _build_image_prompt(
@@ -641,7 +858,7 @@ def _build_image_prompt(
 
     Args:
         intensity: "low", "medium", "high", or "epic"
-        streak_count: Current streak count
+        streak_count: Post-completion streak count; drives the marker count
         task_descriptions: List of completed task descriptions (private — never embedded)
         user_prefs: Optional reward preferences dict
         sensitive_task: If True, uses abstract/symbolic themes only and drops the motif
@@ -674,24 +891,19 @@ def _build_image_prompt(
     style = selection["style"]
     palette = selection["palette"]
 
-    # Avoid list
+    # Avoid list. Sanitized like every other descriptor: these values are
+    # user-authored text and this line puts them in front of the external
+    # image provider, which is the same exposure _sanitize_descriptor exists
+    # to close on the styles and palettes drawn above.
     avoid_str = ""
-    if prefs.get("avoid"):
-        avoid_str = f" Avoid: {', '.join(prefs['avoid'])}."
+    avoid_terms = _sanitized_list(prefs.get("avoid"))
+    if avoid_terms:
+        avoid_str = f" Avoid: {', '.join(avoid_terms)}."
 
-    # Favorite subjects bias the scene's contents where they fit; the theme
-    # pool still decides the composition, so a preference cannot override the
-    # intensity tier or the motif.
-    subjects_str = ""
-    if prefs.get("favorite_subjects"):
-        subjects_str = (
-            f" Where it fits naturally, favor subjects like: "
-            f"{', '.join(prefs['favorite_subjects'])}."
-        )
-
-    # Humor level
+    # Humor level. Validated against the three defined values rather than
+    # interpolated: it reaches the prompt as free text otherwise.
     humor = prefs.get("humor_level", "subtle")
-    if sensitive_task:
+    if sensitive_task or humor not in ("subtle", "playful", "maximal"):
         humor = "subtle"
 
     # Build streak marker description. The count is clamped because the marker
@@ -717,7 +929,7 @@ def _build_image_prompt(
         f"{motif_str}"
         f"Mood: celebratory, uplifting, {humor} energy.{feedback_str} "
         f"Include {streak_str} subtly integrated into the composition. "
-        f"Professional quality, no text, no words, no letters.{subjects_str}{avoid_str} "
+        f"Professional quality, no text, no words, no letters.{avoid_str} "
         f"High resolution, clean composition."
     )
 
@@ -756,6 +968,7 @@ async def generate_reward_image(
     sensitive_task: bool = False,
     user_prefs: dict[str, Any] | None = None,
     feedback_history: list[dict[str, Any]] | None = None,
+    vocabulary: dict[str, list[str]] | None = None,
 ) -> ImageAttempt:
     """Generate an AI celebration image via OpenAI gpt-image-1.
 
@@ -783,6 +996,7 @@ async def generate_reward_image(
         sensitive_task: If True, uses abstract imagery only and drops the motif
         user_prefs: Optional user reward preferences
         feedback_history: Optional feedback list for theme weighting
+        vocabulary: Optional stored descriptor vocabulary; falls back to seeds
 
     Returns:
         An ImageAttempt. On success `image` holds the PNG path plus the
@@ -802,6 +1016,7 @@ async def generate_reward_image(
     if streak_count < 1:
         log.warning("generate_reward_image.invalid_streak_count", streak_count=streak_count)
         streak_count = 1
+
     # No count coupling between descriptions and streak_count: descriptions
     # never reach the prompt, so a caller holding only the current task's title
     # while reporting a streak of seven is correct, not a mismatch.
@@ -817,21 +1032,15 @@ async def generate_reward_image(
     if not task_descriptions:
         log.info("generate_reward_image.no_usable_descriptions")
 
-    # Normalize before any log: an off-vocabulary value would be a raw task-derived
-    # string (private data). Known keys are generic vocabulary — safe to log.
+    # Normalize before any log: an off-vocabulary value would be a raw
+    # task-derived string (private data). Known keys are generic vocabulary.
     motif = motif if motif in _MOTIFS else ""
-
-    # Reduce preferences to allowlisted vocabulary before they can reach the
-    # prompt. Preference values are user-authored text and this is the last
-    # point before they would leave the local network.
-    user_prefs = sanitize_reward_prefs(user_prefs)
 
     _img_gen_start = time.monotonic()
     log.info(
         "image_gen.start",
         intensity=intensity,
         streak_count=streak_count,
-        # Generic vocabulary, not task text — logged so relevance is auditable.
         motif=motif or None,
     )
 
@@ -845,6 +1054,7 @@ async def generate_reward_image(
             sensitive_task=sensitive_task,
             user_prefs=user_prefs,
             feedback_history=feedback_history,
+            vocabulary=vocabulary,
             motif=motif,
         )
 
@@ -981,16 +1191,37 @@ async def generate_weekly_recap(
 # docs/reward-system.md:361-445
 # ---------------------------------------------------------------------------
 
+# How far back load_feedback_history() reads, and how fast a rating inside that
+# window loses influence. These two must stay consistent: a window wider than
+# the decay reach loads rows that can never matter, and a decay reach wider than
+# the window silently truncates ratings that should still count. Exponential
+# decay has no hard edge, so the window is the only cutoff.
+_FEEDBACK_WINDOW_DAYS = 90
+_FEEDBACK_HALF_LIFE_DAYS = 45.0
+
+
+def _feedback_decay(age_days: float) -> float:
+    """Return the influence multiplier for a rating `age_days` old.
+
+    Exponential with a 45-day half-life: a rating is worth 1.0 the day it is
+    given, 0.5 at 45 days, and 0.25 at the 90-day edge of the load window.
+    Negative ages (clock skew between the DB and this process) clamp to 0 so a
+    future-dated row can never outweigh a fresh one.
+    """
+    return float(0.5 ** (max(age_days, 0.0) / _FEEDBACK_HALF_LIFE_DAYS))
+
+
 def apply_feedback_weight(
     feedback_history: list[dict[str, Any]],
     theme_family: str,
     style: str,
     palette: str,
 ) -> float:
-    """Compute a selection weight for a theme/style/palette based on feedback history.
+    """Combined feedback weight for a full theme/style/palette combination.
 
-    Implements bounded feedback weighting: recent reactions decay over time,
-    aggregate weights are capped, result is a nudge not a dictate.
+    The product of the three per-axis weights. Selection itself draws each axis
+    separately via _draw_attribute(); this is the whole-combination view, used
+    where a single number for a candidate image is wanted.
 
     Args:
         feedback_history: List of dicts with keys: score (int), theme_family (str),
@@ -1000,56 +1231,21 @@ def apply_feedback_weight(
         palette: Palette to compute weight for.
 
     Returns:
-        Weight float between 0.5 and 1.5. 1.0 is neutral.
-        >1.0 means positive bias, <1.0 means negative bias.
-        The total nudge is capped at +/-0.5, matching the bounded-feedback
-        contract in docs/reward-system.md: feedback biases selection but can
-        never eliminate a theme.
+        Weight float. 1.0 is neutral, >1.0 positive bias, <1.0 negative bias.
+        Bounded by the per-axis caps in _AXIS_NUDGE_CAP and therefore always
+        strictly positive: feedback biases selection and can never eliminate a
+        combination. The floor that actually guarantees novelty is the
+        _SELECTION_EPSILON mixture in _draw_attribute(), which bounds
+        probability rather than weight.
     """
     if not feedback_history:
         return 1.0
 
-    now = datetime.now(UTC)
-    total_nudge = 0.0
-
-    for entry in feedback_history:
-        score = entry.get("score", 0)
-        entry_theme = entry.get("theme_family", "")
-        entry_style = entry.get("style", "")
-        entry_palette = entry.get("palette", "")
-        entry_ts_str = entry.get("timestamp", "")
-
-        # Check relevance
-        match_weight = 0.0
-        if entry_theme == theme_family:
-            match_weight += 0.6
-        if entry_style == style:
-            match_weight += 0.3
-        if entry_palette == palette:
-            match_weight += 0.1
-
-        if match_weight == 0:
-            continue
-
-        # Time decay: entries older than 30 days have 0 effect
-        try:
-            entry_ts = datetime.fromisoformat(entry_ts_str.replace("Z", "+00:00"))
-            age_days = (now - entry_ts).days
-        except (ValueError, TypeError):
-            age_days = 30
-
-        if age_days >= 30:
-            continue
-
-        decay = 1.0 - (age_days / 30.0)
-
-        # Contribution: score ∈ {-1, 0, 1} × match × decay
-        contribution = score * match_weight * decay
-        total_nudge += contribution
-
-    # Cap total nudge at ±0.5 (so weight stays in [0.5, 1.5])
-    total_nudge = max(-0.5, min(0.5, total_nudge))
-    return 1.0 + total_nudge
+    return (
+        _attribute_weight(feedback_history, axis="theme_family", value=theme_family)
+        * _attribute_weight(feedback_history, axis="style", value=style)
+        * _attribute_weight(feedback_history, axis="palette", value=palette)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1147,8 +1343,13 @@ async def record_reward_feedback(
         return False
 
 
-async def load_feedback_history(peer: str, days: int = 90) -> list[dict[str, Any]]:
+async def load_feedback_history(
+    peer: str, days: int = _FEEDBACK_WINDOW_DAYS
+) -> list[dict[str, Any]]:
     """Load recent reward feedback for prompt personalization.
+
+    The default window is _FEEDBACK_WINDOW_DAYS so it cannot drift away from the
+    decay curve in apply_feedback_weight().
 
     Returns an empty list on DB failure so reward delivery can proceed with
     neutral generation.
@@ -1201,21 +1402,25 @@ async def load_feedback_history(peer: str, days: int = 90) -> list[dict[str, Any
         return []
 
 
-async def load_user_prefs(peer: str) -> dict[str, Any]:
-    """Load this peer's reward preferences from the user_prefs table.
+async def load_reward_prefs(peer: str) -> dict[str, Any]:
+    """Load the peer's reward-image taste profile from Postgres.
 
-    Returns the `rewards` sub-dict of `prefs_json` — the shape _select_theme()
-    and _build_image_prompt() consume (`preferred_styles`, `preferred_palettes`,
-    `favorite_subjects`, `avoid`, `humor_level`).
+    Reads `user_prefs.prefs_json -> 'rewards'` (docs/user-preferences.md:
+    Reward Preferences). Returns {} when the peer has no row, has no rewards
+    subtree, or when the subtree is not a JSON object.
 
-    Prefs load here rather than travelling through graph state because
-    State.user_prefs is populated by nothing today, so every reward ran with
-    preferences disabled. Loading beside load_feedback_history() — the other
-    peer-scoped reward read — means every caller of maybe_reward() gets them,
-    now and later.
+    Read from Postgres here rather than threaded through LangGraph State on
+    purpose: State is the checkpoint unit, so a preferences copy living there
+    would be persisted per thread and drift from the table on every edit.
+    maybe_reward() already owns one peer-keyed fail-open read
+    (load_feedback_history); this is the same shape and adds no new failure
+    mode.
 
-    Returns an empty dict on a missing row or any DB failure, so reward
-    delivery proceeds with neutral generation.
+    Returns {} on DB failure so reward delivery proceeds with neutral
+    generation rather than being blocked by a preferences lookup.
+
+    Privacy: peer is a DB filter key only. Preference contents are never
+    logged — they are user-authored free text.
     """
     from app.tools.db import get_db_conn
 
@@ -1231,19 +1436,20 @@ async def load_user_prefs(peer: str) -> dict[str, Any]:
             return {}
 
         prefs_json = row["prefs_json"]
-        if isinstance(prefs_json, str):
-            import json
-
-            prefs_json = json.loads(prefs_json)
         if not isinstance(prefs_json, dict):
+            # Column is NOT NULL DEFAULT '{}', but a scalar or array JSON value
+            # would still satisfy jsonb. Treat anything non-object as absent.
             return {}
 
         rewards = prefs_json.get("rewards")
-        return rewards if isinstance(rewards, dict) else {}
+        if not isinstance(rewards, dict):
+            return {}
+
+        return rewards
 
     except Exception:
-        # Preference values are user-authored text — never log them.
-        log.warning("load_user_prefs.failed")
+        # Count-free, content-free: the failure is what matters, not the value.
+        log.warning("load_reward_prefs.failed")
         return {}
 
 
@@ -1363,9 +1569,8 @@ async def maybe_reward(
         is_parent_complete: True if all sub-tasks of a parent are done.
         is_all_cleared: True if all tasks cleared.
         rewards_in_last_hour: Recent reward count for diminishing returns.
-        user_prefs: Optional user reward preferences (full prefs dict, read
-            from its `rewards` key). Omit it and this peer's stored
-            preferences load from Postgres instead.
+        user_prefs: Optional user preferences. When omitted, the peer's stored
+            taste profile is loaded from Postgres via load_reward_prefs().
 
     Returns:
         RewardResult with text (celebration message) and attachment_path (PNG
@@ -1393,20 +1598,46 @@ async def maybe_reward(
     motif = ""
     image_failure_reason: str | None = None
     if intensity_label != "lightest" and not sensitive:
-        # Explicit prefs win; otherwise load this peer's stored preferences.
-        prefs = (user_prefs or {}).get("rewards") if user_prefs else None
-        if prefs is None:
-            prefs = await load_user_prefs(peer)
+        # An explicit user_prefs argument wins; otherwise fall back to the
+        # stored taste profile. Callers in the graph do not carry preferences,
+        # so in production this is the path that runs.
+        prefs: dict[str, Any] | None
+        if user_prefs is not None:
+            prefs = user_prefs.get("rewards")
+        else:
+            try:
+                prefs = await load_reward_prefs(peer)
+            except Exception:
+                # load_reward_prefs already fails open; this guards the call
+                # itself so a preferences lookup can never block a reward.
+                log.warning("maybe_reward.reward_prefs_failed")
+                prefs = None
         try:
             feedback_history = await load_feedback_history(peer)
         except Exception:
             log.warning("maybe_reward.feedback_history_failed")
             feedback_history = []
 
+        # The stored vocabulary is an enhancement, not a precondition: any
+        # failure degrades to the seed constants rather than to no image.
+        vocabulary: dict[str, list[str]] | None = None
+        try:
+            from app.tools.reward_pool import load_vocabulary
+
+            vocabulary = await load_vocabulary(peer, intensity=intensity_label)
+        except Exception:
+            log.warning("maybe_reward.vocabulary_failed")
+
         # Classify on the local LLM tier. The label — not the title — is what
         # reaches the image provider, and it is what makes the picture about
         # the thing the user actually finished.
-        motif = await classify_task_motif(task_title)
+        #
+        # Gated on an image being possible at all: without a key there is no
+        # prompt to steer, and a model round-trip before a text-only fallback
+        # is latency the user pays for nothing. Immediate gratification is the
+        # point of the reward (docs/reward-system.md).
+        if os.environ.get("OPENAI_API_KEY"):
+            motif = await classify_task_motif(task_title)
 
         attempt = await generate_reward_image(
             intensity=intensity_label,
@@ -1420,9 +1651,28 @@ async def maybe_reward(
             sensitive_task=sensitive,
             user_prefs=prefs,
             feedback_history=feedback_history,
+            vocabulary=vocabulary,
         )
         image = attempt["image"]
         image_failure_reason = attempt["failure_reason"]
+
+        if image is not None and vocabulary is not None:
+            # Diagnostic counters only, and already-delivered work: never let
+            # this fail a reward that has been generated.
+            try:
+                from app.tools.reward_pool import record_use
+
+                await record_use(
+                    peer,
+                    selection={
+                        "theme_family": image["theme_family"],
+                        "style": image["style"],
+                        "palette": image["palette"],
+                    },
+                    intensity=intensity_label,
+                )
+            except Exception:
+                log.debug("maybe_reward.record_use_failed")
     elif sensitive:
         # Sensitive: muted emoji only (no image), and no motif classification —
         # the title never goes to a model and the imagery stays unreadable.

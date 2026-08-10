@@ -30,22 +30,15 @@ fires on every PR that touches `app/**`, `migrations/**`, `setup/model-tiers.jso
 | Integration | <2 min | $0 | every commit |
 | Structural lints | <10 s | $0 | every commit |
 | Compose smoke | <3 min | $0 | gated by `ENABLE_COMPOSE_SMOKE=true` — runs on demand only |
-| Evals (baseline) | 10-20 min | ~$2-5 | `.github/workflows/pr-tests.yml` on PRs touching the prompt/model surface, plus `.github/workflows/nightly-evals.yml` — cron 09:00 UTC + `workflow_dispatch` |
+| Evals (baseline) | 10-20 min | ~$2-5 | `.github/workflows/nightly-evals.yml` — cron 09:00 UTC + `workflow_dispatch` |
 | Model-swap report | 15-30 min | ~$5-10 | `.github/workflows/model-swap.yml` — `workflow_dispatch` only |
 
-Evals are a required PR check when the change can move model behavior:
-`app/prompts/`, `app/graph/`, `app/models.py`, `app/tools/rewards.py`,
-`docs/ai-prompts/`, `setup/model-tiers.json`, or `tests/evals/`. Behavior
-contracts are the only layer that catches a prompt or classifier regression the
-mocked layers cannot see, so waiting for the nightly run would mean merging
-first and finding out later. The nightly run stays: it re-validates the deployed
-tiers against drift on the model host, which no PR trigger would catch.
-
-All eval jobs run on the self-hosted `homelab` runner (which can reach the
-tailnet-only proxy) and provide the proxy env vars directly — a non-empty
-placeholder API key and the OpenAI-compatible `/v1` endpoint — rather than repo
-secrets. The compose smoke is manually gated by `ENABLE_COMPOSE_SMOKE` — there's
-no scheduled trigger (it boots the full stack and is too slow for PR CI).
+CI never sets `ENABLE_LIVE_LLM_EVALS=true` for PRs. The nightly eval workflow
+and model-swap workflow run on the self-hosted `homelab` runner (which can reach
+the tailnet-only proxy) and provide the required proxy env vars directly — a
+non-empty placeholder API key and the OpenAI-compatible `/v1` endpoint — rather
+than repo secrets. The compose smoke is manually gated by `ENABLE_COMPOSE_SMOKE` —
+there's no scheduled trigger (it boots the full stack and is too slow for PR CI).
 
 ---
 

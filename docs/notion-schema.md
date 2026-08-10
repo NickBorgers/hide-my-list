@@ -9,6 +9,29 @@ title: Notion Schema
 
 hide-my-list uses Notion as database, Notion API for all CRUD. Zero DB setup, visual backup, rich querying.
 
+## Scope and Ownership
+
+**The task database belongs to one person.** There is no owner, peer, or tenant
+column on `TASKS`, and none is planned. Every task in the database is that one
+person's task.
+
+`AUTHORIZED_PEERS` is a list of Signal addresses, but the addresses are one
+user's devices and numbers, not separate people. Any authorized address may
+read, select, reject, or complete any task in the database. Code that queries
+the whole open-task list and writes to whatever it finds is operating within
+scope — the whole list is the whole of one person's list.
+
+Why this matters to reviewers: several code paths look like missing
+authorization checks against a multi-tenant schema. `notion.query_all()` with
+no peer filter is the normal case, not a gap. The security boundary in this
+system is the `AUTHORIZED_PEERS` allowlist at the Signal ingress
+(`app/ingress/signal_listener.py`), which refuses to start when empty. Nothing
+past that boundary partitions tasks, because there is nothing to partition.
+
+A future multi-user version would need an owner column here, peer-scoped Notion
+queries, and per-peer filtering in selection and completion. None of that
+exists, and no current code should be read as if it does.
+
 ## Database Structure
 
 ```mermaid

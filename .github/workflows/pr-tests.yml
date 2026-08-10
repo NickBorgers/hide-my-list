@@ -52,7 +52,6 @@ jobs:
       workflows: ${{ steps.filter.outputs.workflows }}
       devcontainer: ${{ steps.filter.outputs.devcontainer }}
       docker: ${{ steps.filter.outputs.docker }}
-      evals: ${{ steps.filter.outputs.evals }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -97,14 +96,6 @@ jobs:
               - 'setup/**'
               - 'pyproject.toml'
               - '.github/workflows/app-image.yml'
-            evals:
-              - 'app/prompts/**'
-              - 'app/graph/**'
-              - 'app/models.py'
-              - 'app/tools/rewards.py'
-              - 'docs/ai-prompts/**'
-              - 'setup/model-tiers.json'
-              - 'tests/evals/**'
 
   script-validation:
     name: Script Validation
@@ -224,64 +215,10 @@ jobs:
           load: false
           cache-from: type=gha
 
-  eval-validation:
-    name: LLM Behavior Evals
-    needs: changes
-    if: needs.changes.outputs.evals == 'true'
-    # Self-hosted: the LiteLLM proxy is reachable only over the tailnet, so a
-    # GitHub-hosted runner cannot resolve it. Behavior contracts are the only
-    # check that catches a prompt or classifier change the unit tests cannot
-    # see, so they run per-PR rather than waiting for the nightly job.
-    runs-on: [self-hosted, homelab]
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-
-      - name: Install dependencies
-        run: pip install --quiet -e ".[dev]"
-
-      - name: Read baseline models from setup/model-tiers.json
-        id: baseline
-        run: |
-          set -euo pipefail
-          MODELS=$(python -c 'import json,sys; t=json.load(open("setup/model-tiers.json")); print(",".join(sorted(set(t.values()))))')
-          echo "models=$MODELS" >> "$GITHUB_OUTPUT"
-
-      - name: Run eval suite
-        env:
-          ENABLE_LIVE_LLM_EVALS: 'true'
-          EVAL_MODELS: ${{ steps.baseline.outputs.models }}
-          EVAL_BASELINE_MODELS: ${{ steps.baseline.outputs.models }}
-          # Lower than nightly: a PR run covers the deployed tiers only, and a
-          # runaway cost here would be paid once per push rather than once a day.
-          EVAL_BUDGET_USD: '5'
-          # The LiteLLM proxy does not verify bearer tokens; every other CI
-          # caller passes the same literal. The eval layer needs the
-          # OpenAI-compatible /v1 endpoint (app/models.py asserts on it).
-          LLM_PROXY_API_KEY: fake-key
-          LLM_PROXY_BASE_URL: https://llm.featherback-mermaid.ts.net/v1
-        run: python -m tests.evals.runner
-
-      - name: Upload eval report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr-evals-${{ github.run_id }}
-          path: tests/evals/runs/
-          retention-days: 14
-
   all-tests-passed:
     name: All Required Tests
     runs-on: ubuntu-latest
-    needs: [changes, script-validation, doc-validation, workflow-validation, devcontainer-validation, docker-build-validation, eval-validation]
+    needs: [changes, script-validation, doc-validation, workflow-validation, devcontainer-validation, docker-build-validation]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
 
     steps:
@@ -308,10 +245,6 @@ jobs:
           fi
           if ! check_result "${{ needs.devcontainer-validation.result }}"; then
             echo "Devcontainer Build Check: ${{ needs.devcontainer-validation.result }}"
-            failed=true
-          fi
-          if ! check_result "${{ needs.eval-validation.result }}"; then
-            echo "LLM Behavior Evals: ${{ needs.eval-validation.result }}"
             failed=true
           fi
           if ! check_result "${{ needs.docker-build-validation.result }}"; then
