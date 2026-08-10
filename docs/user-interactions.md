@@ -222,6 +222,14 @@ A task named in the message outranks both context sources, including an active
 task pointing somewhere else — the user naming a task is a stronger signal than
 an inference about which task they are on.
 
+The named-task search covers every open, non-reminder task in the database, not
+only tasks the agent has recently mentioned. That is the intended scope: the
+database holds one person's tasks and has no owner column, so the whole open
+list is the whole of the user's list. See **Scope and Ownership** in
+`docs/notion-schema.md`. Completion is the one place this is worth stating
+plainly, because it is the only resolution path that writes to a page no
+context source pointed at.
+
 Why this design: the two context sources expire, and when they both have, nothing
 else can connect "finished the dishes" to a page. The message is also the only
 source the user can steer. When both context sources are live, the more recent

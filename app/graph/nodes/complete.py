@@ -251,6 +251,13 @@ async def _resolve_title_match(incoming: str, residue: set[str], *, now: datetim
     through to context-based resolution. This must not raise — the node's outer
     handler emits complete_node.error, which the eval runner treats as the
     hand-written fallback path rather than real behavior.
+
+    Scope: the candidate set is every open non-reminder task, unfiltered by
+    peer. That is deliberate and is the documented data model, not a missing
+    authorization check — the Notion database holds one person's tasks and has
+    no owner column, and AUTHORIZED_PEERS lists that person's own addresses.
+    See "Scope and Ownership" in docs/notion-schema.md. The access boundary is
+    the allowlist at the Signal ingress; past it there is nothing to partition.
     """
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
