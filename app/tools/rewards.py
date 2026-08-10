@@ -1318,7 +1318,7 @@ async def maybe_reward(
         # stored taste profile. Callers in the graph do not carry preferences,
         # so in production this is the path that runs.
         prefs: dict[str, Any] | None
-        if user_prefs:
+        if user_prefs is not None:
             prefs = user_prefs.get("rewards")
         else:
             try:

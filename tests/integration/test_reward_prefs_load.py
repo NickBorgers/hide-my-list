@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -168,3 +169,57 @@ async def test_loaded_prefs_reach_theme_selection(clean_prefs: Any) -> None:
 
     assert "placeholder distinctive style" in styles
     assert len(styles) > 1, "a stated preference must bias selection, not lock it"
+
+
+@pytest.mark.asyncio
+async def test_maybe_reward_uses_stored_prefs_without_mock(clean_prefs: Any) -> None:
+    """Stored prefs reach generate_reward_image through the real maybe_reward path.
+
+    Proves end-to-end wiring: prefs in Postgres -> load_reward_prefs (real, not
+    patched) -> maybe_reward -> generate_reward_image receives the profile.
+    Outbound image generation and manifest write are mocked; DB reads are real.
+    """
+    import uuid
+
+    from app.tools import rewards as rewards_module
+
+    await _write_prefs(
+        clean_prefs,
+        json.dumps(
+            {
+                "rewards": {
+                    "preferred_styles": ["placeholder e2e style"],
+                    "preferred_palettes": ["placeholder e2e palette"],
+                }
+            }
+        ),
+    )
+
+    image_mock = AsyncMock(
+        return_value={
+            "path": "/tmp/reward_artifacts/placeholder.png",
+            "theme_family": "placeholder",
+            "style": "placeholder e2e style",
+            "palette": "placeholder e2e palette",
+        }
+    )
+
+    with (
+        patch.object(rewards_module, "generate_reward_image", new=image_mock),
+        patch.object(rewards_module, "write_reward_manifest", new=AsyncMock(return_value=uuid.uuid4())),
+        patch.object(rewards_module, "compute_intensity", return_value=("high", 70)),
+    ):
+        await rewards_module.maybe_reward(
+            peer=_PEER,
+            task_title="Placeholder task title",
+            notion_page_id="<page-id-e2e>",
+            streak=2,
+            energy_required="High",
+            time_estimate=45,
+        )
+
+    assert image_mock.called
+    passed_prefs = image_mock.await_args.kwargs["user_prefs"]
+    assert passed_prefs is not None
+    assert passed_prefs.get("preferred_styles") == ["placeholder e2e style"]
+    assert passed_prefs.get("preferred_palettes") == ["placeholder e2e palette"]
