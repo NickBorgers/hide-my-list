@@ -1,0 +1,50 @@
+---
+# Complete scenario: the user names the finished task instead of relying on
+# context. There is no active_task and no unresolved reminder, so the message
+# text is the only thing that can identify the page — the model has to pick it
+# out of the open-task pool rather than asking which task was meant.
+# notion_tasks is required because complete_node reads query_all to build the
+# candidate set; every task carries a status so it survives the open-task filter.
+id: complete-named-task-001
+node: complete
+tier: cheap
+peer: "<test-peer-11>"
+inbound: "finally washed the dishes"
+prior_state:
+  streak: 1
+  tasks_completed_today: 0
+  conversation_state: idle
+notion_tasks:
+  - id: "<placeholder-page-id-1>"
+    title: "Wash the dishes"
+    status: "Pending"
+    work_type: "Physical"
+    energy_required: "Low"
+    time_estimate: 15
+  - id: "<placeholder-page-id-2>"
+    title: "Email the landlord about the lease"
+    status: "Pending"
+    work_type: "Deep Work"
+    energy_required: "Medium"
+    time_estimate: 30
+  - id: "<placeholder-page-id-3>"
+    title: "Book the dentist appointment"
+    status: "Pending"
+    work_type: "Independent"
+    energy_required: "Low"
+    time_estimate: 10
+contracts:
+  - kind: shame_safe
+    threshold: 0.85
+  # The pre-fix behavior for this exact message: no resolvable target, so the
+  # node asked which task was meant.
+  - kind: regex_forbid
+    pattern: "(?i)which\\s+task"
+  - kind: judge
+    rubric: |
+      The response acknowledges that a task was completed and celebrates it.
+      It does NOT ask the user which task they meant, and does NOT say it
+      cannot find or identify the task. Score 1.0 when it reads as a
+      completion acknowledgment, 0.0 when it asks the user to identify the
+      task or reports being unable to.
+    threshold: 0.7

@@ -435,6 +435,269 @@ async def test_complete_node_no_active_task_still_confirms() -> None:
 
 
 # ---------------------------------------------------------------------------
+# COMPLETE node: resolving the task named in the message
+# ---------------------------------------------------------------------------
+
+def _notion_task_page(page_id: str, title: str, status: str = "Pending") -> dict:
+    return {
+        "id": page_id,
+        "properties": {
+            "Title": {"title": [{"plain_text": title}]},
+            "Status": {"select": {"name": status}},
+            "Is Reminder": {"checkbox": False},
+        },
+    }
+
+
+def _complete_state(**overrides: Any) -> State:
+    state: dict[str, Any] = {
+        "peer": "<test-complete-named>",
+        "incoming": "done",
+        "intent": "COMPLETE",
+        "messages": [],
+        "active_task": None,
+        "streak": 0,
+        "tasks_completed_today": 0,
+        "user_prefs": {},
+        "mood": None,
+        "available_minutes": None,
+        "conversation_state": "idle",
+        "pending_outbound": [],
+    }
+    state.update(overrides)
+    return state  # type: ignore[return-value]
+
+
+@pytest.mark.asyncio
+async def test_complete_node_resolves_task_named_in_the_message() -> None:
+    """The production failure: no active task, no live reminder, task named in text."""
+    from app.graph.nodes import complete as complete_module
+
+    update_status = AsyncMock()
+    reward_mock = AsyncMock(return_value={"text": "Nice work!", "attachment_path": None})
+    query_all = AsyncMock(return_value={"results": [
+        _notion_task_page("<page_A>", "Wash the dishes"),
+        _notion_task_page("<page_B>", "Email the landlord"),
+    ]})
+
+    with (
+        patch("app.tools.notion.update_status", update_status),
+        patch("app.tools.notion.query_all", query_all),
+        patch("app.tools.rewards.maybe_reward", reward_mock),
+        patch.object(complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)),
+        patch(
+            "app.models.llm",
+            return_value=_mock_llm_response(
+                json.dumps({"matched_page_id": "<page_A>", "confidence": 0.95})
+            ),
+        ),
+    ):
+        result = await complete_module.complete_node(
+            _complete_state(incoming="finally washed the dishes")
+        )
+
+    update_status.assert_awaited_once_with(page_id="<page_A>", new_status="Completed")
+    assert reward_mock.await_args.kwargs["notion_page_id"] == "<page_A>"
+    assert reward_mock.await_args.kwargs["task_title"] == "Wash the dishes"
+    assert result["pending_outbound"][0]["notion_page_id"] == "<page_A>"
+    assert result["streak"] == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_node_named_task_outranks_a_different_active_task() -> None:
+    """Naming task B while task A is selected must not complete A."""
+    from app.graph.nodes import complete as complete_module
+
+    update_status = AsyncMock()
+    reward_mock = AsyncMock(return_value={"text": "Nice work!", "attachment_path": None})
+    query_all = AsyncMock(return_value={"results": [
+        _notion_task_page("<page_B>", "Wash the dishes"),
+    ]})
+
+    with (
+        patch("app.tools.notion.update_status", update_status),
+        patch("app.tools.notion.query_all", query_all),
+        patch("app.tools.rewards.maybe_reward", reward_mock),
+        patch.object(complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)),
+        patch(
+            "app.models.llm",
+            return_value=_mock_llm_response(
+                json.dumps({"matched_page_id": "<page_B>", "confidence": 0.95})
+            ),
+        ),
+    ):
+        result = await complete_module.complete_node(
+            _complete_state(
+                incoming="done with the dishes",
+                active_task=_active_task("Fold the laundry", page_id="<page_A>"),
+            )
+        )
+
+    update_status.assert_awaited_once_with(page_id="<page_B>", new_status="Completed")
+    assert result["pending_outbound"][0]["notion_page_id"] == "<page_B>"
+
+
+@pytest.mark.asyncio
+async def test_complete_node_below_threshold_clarifies_rather_than_writing() -> None:
+    """A sub-threshold match with candidates must clarify, not fall back to active task.
+
+    "done with the dishes" shortlists "Wash the dishes" (page_B) at 0.85 — the
+    model found a candidate but was not confident enough. Completing the active
+    task "Fold the laundry" (page_A) would be wrong: the message named dishes,
+    not laundry. The candidate-rejection guard catches this and clarifies.
+    """
+    from app.graph.nodes import complete as complete_module
+
+    update_status = AsyncMock()
+    reward_mock = AsyncMock(return_value={"text": "Nice work!", "attachment_path": None})
+    query_all = AsyncMock(return_value={"results": [
+        _notion_task_page("<page_B>", "Wash the dishes"),
+    ]})
+
+    with (
+        patch("app.tools.notion.update_status", update_status),
+        patch("app.tools.notion.query_all", query_all),
+        patch("app.tools.rewards.maybe_reward", reward_mock),
+        patch.object(complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)),
+        patch(
+            "app.models.llm",
+            return_value=_mock_llm_response(
+                json.dumps({"matched_page_id": "<page_B>", "confidence": 0.85})
+            ),
+        ),
+    ):
+        result = await complete_module.complete_node(
+            _complete_state(
+                incoming="done with the dishes",
+                active_task=_active_task("Fold the laundry", page_id="<page_A>"),
+            )
+        )
+
+    update_status.assert_not_awaited()
+    reward_mock.assert_not_awaited()
+    assert result["pending_outbound"][0]["notion_page_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_complete_node_ignores_a_task_the_user_still_has_to_do() -> None:
+    """"done, now I need to call mom" lexically shortlists "Call mom".
+
+    Only the model sees the whole sentence, so a null match has to leave the
+    task open rather than falling through to some other resolution.
+    """
+    from app.graph.nodes import complete as complete_module
+
+    update_status = AsyncMock()
+    reward_mock = AsyncMock(return_value={"text": "Nice work!", "attachment_path": None})
+    query_all = AsyncMock(return_value={"results": [
+        _notion_task_page("<page_A>", "Call mom"),
+    ]})
+
+    with (
+        patch("app.tools.notion.update_status", update_status),
+        patch("app.tools.notion.query_all", query_all),
+        patch("app.tools.rewards.maybe_reward", reward_mock),
+        patch.object(complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)),
+        patch(
+            "app.models.llm",
+            return_value=_mock_llm_response(
+                json.dumps({"matched_page_id": None, "confidence": 0.0})
+            ),
+        ),
+    ):
+        result = await complete_module.complete_node(
+            _complete_state(incoming="done, now I need to call mom")
+        )
+
+    update_status.assert_not_awaited()
+    reward_mock.assert_not_awaited()
+    assert result["pending_outbound"][0]["notion_page_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_complete_node_survives_a_notion_failure_during_matching() -> None:
+    """The lookup is additive: when it fails, context-based resolution still runs."""
+    from app.graph.nodes import complete as complete_module
+
+    update_status = AsyncMock()
+    reward_mock = AsyncMock(return_value={"text": "Nice work!", "attachment_path": None})
+
+    with (
+        patch("app.tools.notion.update_status", update_status),
+        patch("app.tools.notion.query_all", AsyncMock(side_effect=RuntimeError("Notion down"))),
+        patch("app.tools.rewards.maybe_reward", reward_mock),
+        patch.object(complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)),
+    ):
+        result = await complete_module.complete_node(
+            _complete_state(
+                incoming="done with the dishes",
+                active_task=_active_task("Wash the dishes", page_id="<page_A>"),
+            )
+        )
+
+    update_status.assert_awaited_once_with(page_id="<page_A>", new_status="Completed")
+    assert result["pending_outbound"][0]["notion_page_id"] == "<page_A>"
+
+
+@pytest.mark.asyncio
+async def test_complete_node_skips_the_lookup_for_a_bare_completion() -> None:
+    """"done!" costs no Notion read and no model call."""
+    from app.graph.nodes import complete as complete_module
+
+    query_all = AsyncMock()
+    llm_factory = MagicMock()
+
+    with (
+        patch("app.tools.notion.update_status", new_callable=AsyncMock),
+        patch("app.tools.notion.query_all", query_all),
+        patch(
+            "app.tools.rewards.maybe_reward",
+            new_callable=AsyncMock,
+            return_value={"text": "Nice work!", "attachment_path": None},
+        ),
+        patch.object(complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)),
+        patch("app.models.llm", llm_factory),
+    ):
+        await complete_module.complete_node(
+            _complete_state(
+                incoming="done!",
+                active_task=_active_task("Wash the dishes", page_id="<page_A>"),
+            )
+        )
+
+    query_all.assert_not_awaited()
+    llm_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_complete_node_skips_the_lookup_when_the_name_is_the_active_task() -> None:
+    """Naming the task already in hand resolves from state, not from Notion."""
+    from app.graph.nodes import complete as complete_module
+
+    query_all = AsyncMock()
+    reward_mock = AsyncMock(return_value={"text": "Nice work!", "attachment_path": None})
+
+    with (
+        patch("app.tools.notion.update_status", new_callable=AsyncMock),
+        patch("app.tools.notion.query_all", query_all),
+        patch("app.tools.rewards.maybe_reward", reward_mock),
+        patch.object(complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)),
+        patch("app.models.llm", MagicMock()),
+    ):
+        await complete_module.complete_node(
+            _complete_state(
+                incoming="done with the laundry",
+                active_task=_active_task("Fold the laundry", page_id="<page_A>"),
+            )
+        )
+
+    query_all.assert_not_awaited()
+    # active_task is the only source carrying reward metadata; it must survive.
+    assert reward_mock.await_args.kwargs["work_type"] == "focus"
+    assert reward_mock.await_args.kwargs["energy_required"] == "Medium"
+
+
+# ---------------------------------------------------------------------------
 # CHECK_IN APScheduler job tests
 # ---------------------------------------------------------------------------
 

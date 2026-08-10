@@ -107,13 +107,27 @@ includes them as a `Prior conversation:` block in the classifier prompt. This le
 follow-ups classify against the active discussion without querying the `recent_outbound`
 table during routing.
 
-After a turn routes to COMPLETE, `app/graph/nodes/complete.py` queries
-`recent_outbound` for the peer, filters to unresolved, unexpired rows, and compares that
-context with `active_task.selected_at`. The newest confident context wins. When the
-`recent_outbound` reminder context wins, the node skips the Notion status write because the
-reminder worker already completes the reminder page at delivery time, rewards the matched
-page, and clears the matched row with `awaiting_reply = false`. When no confident context
-exists, the node asks for clarification instead of completing stale checkpoint context.
+After a turn routes to COMPLETE, `app/graph/nodes/complete.py` resolves the target task
+from three sources in priority order:
+
+1. **Message title match.** When the incoming message carries words beyond the completion
+   phrase (residue tokens after stripping stopwords and completion words), the node queries
+   all open non-reminder tasks via `notion.query_all()`, shortlists candidates by token
+   overlap, and asks a model call to confirm which candidate the message reports as finished.
+   A match above the 0.90 confidence threshold outranks both context sources, including an
+   active task pointing at a different page. When candidates are found but the model rejects
+   them all (null or sub-threshold), the node returns a clarifying question rather than
+   falling through to context — the message asserted something is not done.
+2. **Context comparison.** When no message-named task is resolved, the node queries
+   `recent_outbound` for the peer (unresolved, unexpired rows) and compares that context
+   with `active_task.selected_at`. The newer of the two wins.
+3. **Clarification.** When no source resolves a target, the node asks which task was meant.
+
+When `recent_outbound` wins the context comparison, the node skips the Notion status write
+because the reminder worker already completes the reminder page at delivery time, rewards
+the matched page, and clears the matched row with `awaiting_reply = false`. A bare
+completion message with empty residue (e.g. "done!") skips the Notion read and model call
+entirely and resolves from context only.
 
 **Worker writes:**
 
