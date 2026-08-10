@@ -44,6 +44,7 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/tools/signal_ingress_health.py` — Durable Signal ingress liveness marker; `record_inbound_message` upserts last-inbound timestamp, `check_inbound_silence` logs a warning when the threshold is exceeded
 - `app/tools/reminders.py` — Reminder outbox CRUD
 - `app/tools/rewards.py` — Reward delivery (emoji + image; v1 scope)
+- `app/tools/reward_pool.py` — Per-peer reward descriptor vocabulary; seeds `reward_theme_pool` from the constants in `rewards.py` and loads the active theme/style/palette sets. Fails open to the seed constants — a vocabulary lookup never costs a reward. Sensitive-task rewards never read it.
 - `app/tools/ops_alerts.py` — Ops alert enqueue + drain
 - `app/tools/time_context.py` — Timezone helper
 - `app/tools/db.py` — Postgres connection + migration runner
@@ -84,6 +85,7 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `migrations/0009_deadline_task_peers.sql` — Adds private `deadline_task_peers` routing metadata for deadline reminder backstop jobs
 - `migrations/0010_signal_ingress_health.sql` — Adds `signal_ingress_health` table for durable Signal ingress liveness markers; seeds a default row
 - `migrations/0011_reward_manifest_visual_descriptors.sql` — Adds `theme_family`, `style`, `palette` to `reward_manifests` so emoji reactions can be attributed to the visual choices that earned them; adds a partial index on rated rows
+- `migrations/0012_reward_theme_pool.sql` — Adds `reward_theme_pool`, the per-peer theme/style/palette vocabulary; `value` reaches the image prompt verbatim, so treat it as user-influenced text in ops queries. CHECK constraints scope themes to an intensity and keep style/palette intensity-free; the unique index COALESCEs intensity so seeding stays idempotent under concurrency
 - `tests/unit/` — Unit tests (no DATABASE_URL required)
 - `tests/integration/` — Integration tests; DB-backed tests require DATABASE_URL, HTTP-only tests do not
 - `tests/perf/` — Perf harness: latency + token stats per model, gated by `ENABLE_LLM_PERF=true`. See `docs/python-rewrite/llm-observability.md` for usage.

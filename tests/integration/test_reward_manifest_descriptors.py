@@ -33,9 +33,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 _PEER = "<test-peer-manifest-descriptors>"
+# Descriptors must be current members of the selection vocabularies, otherwise
+# the weighting assertions below have nothing to match against. A stored
+# descriptor that is no longer in the vocabulary is inert by construction —
+# the same path the NULL-descriptor test covers.
 _THEME = "phoenix rising from golden flames"
-_STYLE = "majestic illustration"
-_PALETTE = "fire gold"
+_STYLE = "watercolor"
+_PALETTE = "amber gold"
 
 
 @pytest.fixture()
@@ -135,23 +139,37 @@ async def test_real_feedback_history_biases_theme_selection(clean_manifests: Any
     history = await load_feedback_history(_PEER)
     assert history, "history must be non-empty for this test to mean anything"
 
-    captured: dict[str, float] = {}
+    # _select_theme draws each axis independently, in theme/style/palette
+    # order, so random.choices is called once per axis over that axis'
+    # vocabulary.
+    captured: list[dict[str, float]] = []
 
     def fake_choices(
-        population: list[dict[str, str]], weights: list[float], k: int = 1
-    ) -> list[dict[str, str]]:
-        for candidate, weight in zip(population, weights, strict=True):
-            captured[candidate["theme_family"]] = weight
+        population: list[str], weights: list[float], k: int = 1
+    ) -> list[str]:
+        total = sum(weights)
+        captured.append({v: w / total for v, w in zip(population, weights, strict=True)})
         return [population[0]]
 
     with patch.object(rewards_module.random, "choices", fake_choices):
         rewards_module._select_theme(intensity="high", feedback_history=history)
 
-    others = [w for theme, w in captured.items() if theme != _THEME]
-    assert captured[_THEME] > max(others), (
-        "a real positive reaction stored in Postgres must raise that theme's weight"
+    assert len(captured) == 3, "each axis must be drawn independently"
+    theme_probs, style_probs, palette_probs = captured
+
+    others = [p for theme, p in theme_probs.items() if theme != _THEME]
+    assert theme_probs[_THEME] > max(others), (
+        "a real positive reaction stored in Postgres must raise that theme's odds"
     )
-    assert all(w > 0 for w in captured.values()), "no theme may be excluded outright"
+    assert all(p > 0 for p in theme_probs.values()), "no theme may be excluded outright"
+
+    # The reaction was recorded against a style and palette too, so the same
+    # stored row must lift those axes as well. This is what the descriptors are
+    # for: one reaction is evidence about three things, not one.
+    assert style_probs[_STYLE] > max(p for s, p in style_probs.items() if s != _STYLE)
+    assert palette_probs[_PALETTE] > max(
+        p for s, p in palette_probs.items() if s != _PALETTE
+    )
 
 
 @pytest.mark.asyncio
