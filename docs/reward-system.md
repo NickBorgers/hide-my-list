@@ -285,11 +285,40 @@ Reward prompts are built from three layers:
 
 **Where the vocabularies live.** The seed vocabularies are constants in `app/tools/rewards.py`. On a peer's first image reward they are copied into the `reward_theme_pool` table (migration 0012), keyed by peer, and selection reads from there afterward — so a peer's vocabulary can grow and retire independently of what shipped in the repo. Theme rows are scoped to an intensity; style and palette rows carry no intensity, matching the shared-vocabulary design above.
 
-Retirement is a soft delete: a retired row stops appearing in selection but keeps its rating attribution, and can be resurrected. Nothing is ever deleted.
+Retirement is a soft delete: a retired row stops appearing in selection but keeps its rating attribution and its history. Nothing is ever deleted, so a retirement can be undone by clearing `retired_at`. No job does that on its own — the weekly evolution job proposes only values the peer has never held, so a retired descriptor stays retired until someone brings it back deliberately.
 
 The table is an enhancement, not a precondition. Seeding failure, an unreachable database, and a vocabulary missing any axis all fall back to the seed constants. A partial vocabulary is refused outright rather than used, because a half-loaded axis would silently narrow selection — the failure this design exists to prevent. `reward_theme_pool.value` is embedded verbatim into the image prompt. The seed population comes from the repo constants above and requires no sanitization; any writer that introduces user-influenced values must pass `_sanitize_descriptor` before inserting. Values are read from the table without further filtering, so treat `reward_theme_pool.value` as user-influenced text in ops queries.
 
 **Sensitive-task rewards never read this table.** Their allowlist stays a code constant and `_select_theme` returns before any vocabulary lookup, so that path cannot be steered by stored content however it got there. This is structural, not a filter.
+
+#### Vocabulary Evolution
+
+A weekly job (`theme_evolution`, Mondays 04:30 local) is what makes a peer's vocabulary drift away from the seeds. It retires descriptors the user consistently reacts badly to, and proposes new ones from the qualities of the descriptors they react well to. Over a season the vocabulary a peer draws from stops being the one that shipped in the repo.
+
+**Evidence gate.** The job does nothing unless at least 12 new ratings have been recorded since the last time it added anything. Below that it logs and returns without calling the model.
+
+**Growth is rate-limited:** at most 2 new descriptors and 1 retirement per axis per run. One intensity's theme tier is considered per run, rotating by ISO week; style and palette carry no intensity and so are considered every run.
+
+**Retirement requires sustained evidence** — at least 3 negative reactions, a success rate at or below 25%, and an age of at least 14 days — and is a soft delete: the row keeps its rating attribution and its history.
+
+**Why retirement is allowed to remove a descriptor from selection.** A descriptor that has earned three negative reactions and a success rate at or below 25% is producing images the user does not want. Keeping it reachable forever, in the name of preserving every theoretical combination, trades a recurring real cost — images the user dislikes — for a hypothetical novelty benefit. Novelty is the goal because habituation is the failure mode, and a disliked descriptor is not doing novelty work; it is spending a reward on something that does not land.
+
+What actually protects novelty is the size and freshness of the active set, not the immortality of any one member of it, and both are structurally guaranteed:
+
+- **Retirement can never outpace growth**, and this is enforced per run rather than implied by the constants. A run inserts first and then retires at most as many descriptors on an axis as it actually inserted there, capped at 1 against a maximum of 2 added. An axis that gained nothing — every proposal rejected by the sanitizer, or all duplicates — loses nothing. The active set can hold steady or grow; it cannot shrink.
+- **Growth is counted honestly.** Proposals are deduplicated against every value the peer has ever held, retired ones included, not just the active set. A proposal matching a retired value would otherwise be accepted, lose to the unique index, store nothing, and still count as the growth that licenses a retirement.
+- **Each axis has a hard floor** it may never fall below: 5 themes per intensity, 4 styles, 4 palettes. Retirement stops at the floor regardless of how negative the evidence is.
+- **Nothing is deleted.** A retired row keeps its history and can come back.
+
+This is a different guarantee from the `_SELECTION_EPSILON` floor described under **The novelty floor**, and the two operate at different timescales. Epsilon governs a single draw: no amount of negative feedback can make an active descriptor unreachable. Retirement governs the season: a descriptor with sustained negative evidence leaves the active set and a new one takes its place.
+
+**The model sees no private data.** The prompt is built from descriptor strings and integer rating counts only — never task titles, peer identifiers, emoji, timestamps, or artifact paths. Descriptor strings are restricted to values present in the peer's active `reward_theme_pool` with origin `seed` or `evolved`; all passed `_sanitize_descriptor` before storage. This is the same discipline `_build_image_prompt` enforces.
+
+**Model output is untrusted** and passes the same `_sanitize_descriptor` checks as user preference text before it can be stored, plus a duplicate check against the peer's active values. Rejected proposals are dropped with a count-only log.
+
+**Failure is inert.** An unreachable database, an LLM outage, and unparseable model output all leave the existing vocabulary exactly as it was. Proposals are built before any write, so nothing is touched until there is something to store. Insertion and retirement then run in one transaction on one connection, so a failure between them rolls back both rather than leaving retirements committed against insertions that never landed. The job never raises into the scheduler.
+
+**Early runs are closer to guided vocabulary expansion than to preference learning**, because 12 ratings is still 12 ratings. That is the intended tradeoff: novelty is the product goal and learned taste is the bonus. New descriptors enter at a neutral weight, so they are drawn at exactly baseline rate rather than being promoted on arrival.
 
 **Vocabulary size is a budget, not a feature.** Separating a liked descriptor from a disliked one takes roughly 40 ratings for that descriptor. At this system's volume that is reachable over a season only while the style and palette vocabularies stay around eight entries each. Every value added dilutes per-value evidence linearly, so growth is deliberate and bounded rather than open-ended. Repetition is addressed by recombination, not by longer lists.
 
@@ -435,7 +464,9 @@ Why exponential rather than a fixed expiry: at this system's rating volume — a
 
 Why theme is capped lowest: theme is the highest-cardinality axis and the one that rarely repeats, so it is where novelty is spent and where evidence is thinnest. Style and palette repeat constantly across rewards, so they are where preference can actually be learned, and they carry the larger caps.
 
-**The novelty floor.** Per-axis weights are normalized into a probability distribution and then mixed with a uniform distribution at `_SELECTION_EPSILON` (`0.15`). Every active descriptor therefore keeps at least `0.15 / vocabulary_size` probability, no matter how negative its history. This is the guarantee that novelty is preserved: habituation is the failure mode the image system exists to prevent, so feedback biases selection and can never eliminate a descriptor. Because the floor bounds probability directly rather than bounding a weight, it holds unchanged as vocabularies grow. A single reaction shifts the odds slightly; a consistent pattern shifts them meaningfully; nothing ever disappears.
+**The novelty floor.** Per-axis weights are normalized into a probability distribution and then mixed with a uniform distribution at `_SELECTION_EPSILON` (`0.15`). Every active descriptor therefore keeps at least `0.15 / vocabulary_size` probability, no matter how negative its history. This is what keeps habituation — the failure mode the image system exists to prevent — from creeping back in through feedback: within a draw, feedback biases selection and can never eliminate a descriptor. Because the floor bounds probability directly rather than bounding a weight, it holds unchanged as vocabularies grow. A single reaction shifts the odds slightly; a consistent pattern shifts them meaningfully; no active descriptor's odds ever reach zero.
+
+The floor is a property of the draw, and it applies to the active vocabulary. Membership of that vocabulary is decided elsewhere, on a much slower clock: the weekly `theme_evolution` job retires descriptors with sustained negative evidence and adds new ones at a faster rate than it retires. See **Vocabulary Evolution** for why removal is permitted there and what bounds it.
 
 **Stated preferences bias, they do not dictate.** `preferred_styles`, `preferred_palettes`, and `favorite_subjects` are appended to their axis' vocabulary and receive a `1.5` weight multiplier. They do not replace the vocabulary — a single stated style would otherwise appear on every image, removing style novelty entirely.
 
@@ -454,10 +485,10 @@ The prompt guidance is intentionally short and coarse so feedback nudges future 
 Image generation system inherently addresses novelty:
 
 1. **Independent axis draws** - theme, style, and palette are drawn separately, so each intensity reaches the product of its three vocabularies (currently 5 x 8 x 8 = 320 combinations) rather than a fixed list of triples
-2. **Weighted selection with a floor** - preferences and bounded feedback nudge each axis rather than dictating it, and the `_SELECTION_EPSILON` uniform mixture guarantees every descriptor keeps at least `0.15 / vocabulary_size` probability; no descriptor is ever permanently excluded
+2. **Weighted selection with a floor** - preferences and bounded feedback nudge each axis rather than dictating it, and the `_SELECTION_EPSILON` uniform mixture guarantees every active descriptor keeps at least `0.15 / vocabulary_size` probability; feedback cannot drive an active descriptor's odds to zero
 3. **AI variation** - same prompt produces different images each time
 4. **Streak-responsive** - visual elements change as streaks grow
-5. **Expandable pools** - new themes, styles, and palettes can be added without changing the delivery contract
+5. **Evolving pools** - the weekly `theme_evolution` job grows each axis faster than it retires from it, so the reachable combination count rises over time while descriptors the user consistently dislikes drop out
 
 #### Graceful Degradation — Offline Fallback Rewards
 
