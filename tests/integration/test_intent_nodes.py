@@ -670,11 +670,21 @@ async def test_complete_node_skips_the_lookup_for_a_bare_completion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_complete_node_skips_the_lookup_when_the_name_is_the_active_task() -> None:
-    """Naming the task already in hand resolves from state, not from Notion."""
+async def test_complete_node_keeps_active_task_metadata_when_the_name_matches_it() -> None:
+    """Naming the task already in hand still runs the lookup, and keeps the metadata.
+
+    There is no lexical shortcut past the model: overlapping a task's words is
+    not the same as saying it is finished, so the lookup runs whenever the
+    message names anything. When it lands on the page state already holds, the
+    arbitration keeps the active-task target — it is the only source carrying
+    work_type and energy_required, and a title-match target would silently
+    hand the reward call two empty strings.
+    """
     from app.graph.nodes import complete as complete_module
 
-    query_all = AsyncMock()
+    query_all = AsyncMock(return_value={"results": [
+        _notion_task_page("<page_A>", "Fold the laundry"),
+    ]})
     reward_mock = AsyncMock(return_value={"text": "Nice work!", "attachment_path": None})
 
     with (
@@ -682,7 +692,9 @@ async def test_complete_node_skips_the_lookup_when_the_name_is_the_active_task()
         patch("app.tools.notion.query_all", query_all),
         patch("app.tools.rewards.maybe_reward", reward_mock),
         patch.object(complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)),
-        patch("app.models.llm", MagicMock()),
+        patch("app.models.llm", return_value=_mock_llm_response(
+            json.dumps({"matched_page_id": "<page_A>", "confidence": 0.95})
+        )),
     ):
         await complete_module.complete_node(
             _complete_state(
@@ -691,7 +703,8 @@ async def test_complete_node_skips_the_lookup_when_the_name_is_the_active_task()
             )
         )
 
-    query_all.assert_not_awaited()
+    query_all.assert_awaited()
+    assert reward_mock.await_args.kwargs["notion_page_id"] == "<page_A>"
     # active_task is the only source carrying reward metadata; it must survive.
     assert reward_mock.await_args.kwargs["work_type"] == "focus"
     assert reward_mock.await_args.kwargs["energy_required"] == "Medium"

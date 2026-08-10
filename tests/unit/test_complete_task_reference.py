@@ -18,8 +18,6 @@ import pytest
 
 from app.graph.nodes._task_match import DedupCandidate, dice_coefficient
 from app.graph.nodes.complete import (
-    _ACTIVE_TASK_AGREEMENT_SCORE,
-    _agrees_with_active_task,
     _build_completion_match_prompt,
     _choose_completion_target,
     _CompletionTarget,
@@ -100,33 +98,6 @@ def test_filler_only_message_shortlists_nothing_downstream() -> None:
     residue = _task_reference_tokens("knocked that out")
     assert residue == {"knocked"}
     assert dice_coefficient(residue, {"take", "trash"}) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Active-task agreement short-circuit
-# ---------------------------------------------------------------------------
-
-def test_naming_the_active_task_agrees() -> None:
-    active = _target("active_task", "<page_A>", "Fold the laundry")
-    assert _agrees_with_active_task(_task_reference_tokens("done with the laundry"), active)
-
-
-def test_naming_a_different_task_does_not_agree() -> None:
-    active = _target("active_task", "<page_A>", "Fold the laundry")
-    assert not _agrees_with_active_task(_task_reference_tokens("done with the dishes"), active)
-
-
-def test_agreement_requires_an_active_task() -> None:
-    assert not _agrees_with_active_task({"laundry"}, None)
-    assert not _agrees_with_active_task(set(), _target("active_task", "<page_A>", "Anything"))
-
-
-def test_agreement_threshold_is_the_dice_score() -> None:
-    active = _target("active_task", "<page_A>", "Fold the laundry before bed")
-    # {laundry} against {fold, laundry, before, bed} scores exactly 0.4.
-    score = dice_coefficient({"laundry"}, {"fold", "laundry", "before", "bed"})
-    assert score == pytest.approx(_ACTIVE_TASK_AGREEMENT_SCORE)
-    assert _agrees_with_active_task({"laundry"}, active)
 
 
 # ---------------------------------------------------------------------------

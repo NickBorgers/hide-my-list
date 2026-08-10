@@ -239,7 +239,7 @@ async def test_complete_uses_fresh_active_task_when_recent_outbound_lookup_fails
     ):
         result = await complete_module.complete_node(_state(active_task))  # type: ignore[arg-type]
 
-    update_status.assert_awaited_once_with("<page_B>", "Completed")
+    update_status.assert_awaited_once_with(page_id="<page_B>", new_status="Completed")
     reward_mock.assert_awaited_once()
     reward_kwargs = reward_mock.await_args.kwargs
     _assert_reward_kwargs_shape(reward_kwargs)
