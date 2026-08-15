@@ -1,0 +1,179 @@
+name: E2E Conversations
+
+# Drives scripted multi-turn conversations through the real compiled graph
+# against a real Postgres checkpointer and the real LLM. Notion and Signal are
+# faked; the model is not.
+#
+# Why self-hosted: the LiteLLM proxy is tailnet-only and unreachable from a
+# GitHub-hosted runner. Running PR-branch code on the homelab runner is the
+# same posture `review-fixer.yml`, `review-reviewer.yml`, and `codex.yml`
+# already take, and fork PRs are blocked repo-wide.
+#
+# Why per-PR rather than nightly: the failures this layer catches are cross-turn
+# state handoff regressions — turn N writes state, turn N+M reads it. They merge
+# clean and surface in production. A nightly run reports them the morning after
+# the merge, which is too late to be a gate.
+#
+# Determinism: assertions are side-effect shaped (which Notion page was written,
+# whether a reminder row was resolved, how many messages went out), never
+# equality on model wording. app/models.py already requests temperature 0, so a
+# misrouted intent is reproducible rather than flaky.
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+      - '**'
+    paths:
+      - 'app/**'
+      - 'migrations/**'
+      - 'tests/e2e/**'
+      - 'tests/support/**'
+      - 'setup/model-tiers.json'
+      - 'pyproject.toml'
+      - '.github/workflows/e2e.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to test (branch name or SHA)'
+        required: false
+        type: string
+      max_calls:
+        description: 'Hard cap on live LLM calls'
+        required: false
+        default: '120'
+        type: string
+
+# Shared with nightly-evals and model-swap: app/models.py records that the LLM
+# host can hold only one Gemma model in RAM at a time, so two workflows hitting
+# the proxy at once thrash the model cache and corrupt each other's latency.
+# cancel-in-progress stays false — a cancelled run mid-turn leaves rows behind.
+concurrency:
+  group: homelab-llm-serial
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E Conversations
+    # Fork PRs are blocked: this runs on a persistent, tailnet-connected host.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, homelab]
+    timeout-minutes: 30
+
+    # No `services:` block. The homelab runner is itself a container with the
+    # Docker socket mounted, so service containers are unreachable from the job:
+    # their network alias does not resolve (the job is not on the service
+    # network) and their published ports land on the Docker *host*, not in the
+    # runner's network namespace. The first run of this workflow proved all four
+    # candidate addresses refused. Postgres is started below instead, sharing
+    # the runner's own namespace so it answers on localhost.
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.ref }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --quiet -e ".[dev]"
+
+      # Start Postgres inside the runner's own network namespace, so it answers
+      # on localhost:5432 no matter where the Docker daemon publishes ports.
+      # `--network container:<self>` is the docker-outside-of-docker case, which
+      # is what this runner is; the published-port form is the fallback for a
+      # runner installed directly on a host. The database must be named `hml` —
+      # migrations/0005_readonly_user.sql issues a literal
+      # `GRANT CONNECT ON DATABASE hml`, not current_database().
+      - name: Start Postgres
+        env:
+          PG_IMAGE: postgres:16-alpine
+        run: |
+          set -euo pipefail
+          docker rm -f hml-e2e-pg >/dev/null 2>&1 || true
+
+          common=(-d --name hml-e2e-pg
+                  -e POSTGRES_USER=hml -e POSTGRES_PASSWORD=hml -e POSTGRES_DB=hml)
+
+          if docker run "${common[@]}" --network "container:$(hostname)" "$PG_IMAGE"; then
+            echo "postgres shares the runner's network namespace"
+          else
+            echo "shared namespace unavailable; falling back to a published port"
+            docker rm -f hml-e2e-pg >/dev/null 2>&1 || true
+            docker run "${common[@]}" -p 127.0.0.1:5432:5432 "$PG_IMAGE"
+          fi
+
+          # Readiness via `docker exec` rather than a host connection: it works
+          # identically under both network modes.
+          for _ in $(seq 1 30); do
+            if docker exec hml-e2e-pg pg_isready -U hml -d hml >/dev/null 2>&1; then
+              echo "DATABASE_URL=postgresql://hml:hml@localhost:5432/hml" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Postgres did not become ready. Container logs:" >&2
+          docker logs hml-e2e-pg >&2 || true
+          exit 1
+
+      - name: Run conversation scenarios
+        env:
+          ENABLE_E2E_CONVERSATIONS: 'true'
+          E2E_MAX_LLM_CALLS: ${{ inputs.max_calls || '120' }}
+          # DATABASE_URL is exported by the "Resolve the Postgres endpoint"
+          # step above — a static value cannot express which address is
+          # reachable on this runner.
+          # The LiteLLM proxy does not verify bearer tokens; every other CI
+          # caller passes the same literal. No secrets are used here.
+          LLM_PROXY_API_KEY: fake-key
+          LLM_PROXY_BASE_URL: https://llm.featherback-mermaid.ts.net/v1
+          AUTHORIZED_PEERS: '+15550000001,+15550000002'
+          SIGNAL_ACCOUNT: '+15550009999'
+          # OPENAI_API_KEY is deliberately unset: generate_reward_image()
+          # short-circuits without it, so rewards stay emoji-only and no image
+          # generation cost is incurred.
+          REWARD_ARTIFACTS_DIR: ${{ runner.temp }}/reward_artifacts
+        run: |
+          mkdir -p "$REWARD_ARTIFACTS_DIR"
+          pytest tests/e2e/ -q -rs
+
+      # The runner is persistent, so a leaked container would collide with the
+      # next run's bind on 5432.
+      - name: Stop Postgres
+        if: always()
+        run: docker rm -f hml-e2e-pg >/dev/null 2>&1 || true
+
+  e2e-required:
+    name: E2E Conversations Required
+    runs-on: ubuntu-latest
+    needs: [e2e]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+
+    steps:
+      - name: Check E2E result
+        run: |
+          result="${{ needs.e2e.result }}"
+          if [[ "$result" == "success" || "$result" == "skipped" ]]; then
+            echo "E2E Conversations: $result"
+            exit 0
+          fi
+          echo "E2E Conversations: $result"
+          echo ""
+          echo "A conversation scenario failed. Two distinct causes:"
+          echo "  IntentMisroute      - the classifier chose a different intent."
+          echo "                        The state machine is intact; the model drifted."
+          echo "  AssertionError      - an invariant or a scenario contract broke."
+          echo ""
+          echo "If the homelab runner or the LiteLLM proxy was unavailable, the job"
+          echo "fails rather than skips by design — a silent skip here would let a"
+          echo "cross-turn state regression merge unchecked."
+          exit 1

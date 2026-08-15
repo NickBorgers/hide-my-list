@@ -18,9 +18,17 @@ fires on every PR that touches `app/**`, `migrations/**`, `setup/model-tiers.jso
 |---|---|---|---|---|---|
 | Unit | `tests/unit/` | mocked (`MagicMock`) | none | no | Pure logic, prompt structure, regex/type assertions, structural lints |
 | Integration | `tests/integration/` | mocked (with strict call-arg assertions) | real (container) | no | State machines, DB schema, async plumbing, wiring contracts |
+| E2E | `tests/e2e/` | real, single-model via LiteLLM proxy | real (container) | no | Multi-turn conversations through the real compiled graph; cross-turn state handoff |
 | Eval | `tests/evals/` | real, multi-model via LiteLLM proxy | none | no | Behavioral contracts across model swaps; judge-LLM scoring |
 | Smoke | `tests/smoke/` | none | none | yes (boots stack) | Deployment-gap catch |
 | Regressions | `tests/regressions/` | varies | varies | varies | One permanent test per production bug |
+
+E2E and Eval both call the real model but answer different questions. Eval scores
+**what one node says** against a fixed world, judged by a second model. E2E scores
+**what the system does** across several turns — which Notion page was written,
+whether a reminder row was resolved, what survived in the checkpoint — and never
+judges wording. That is why E2E can gate a merge without flaking while Eval runs
+nightly.
 
 ### Cost and frequency
 
@@ -30,6 +38,7 @@ fires on every PR that touches `app/**`, `migrations/**`, `setup/model-tiers.jso
 | Integration | <2 min | $0 | every commit — `pytest-db` job (Postgres service container) |
 | Regressions | <1 min | $0 | every commit — `pytest-db` job |
 | Structural lints | <10 s | $0 | every commit — `pytest-unit` job |
+| E2E conversations | 6-12 min | $0 (self-hosted model) | every PR touching `app/`, `migrations/`, `tests/e2e/`, `tests/support/`, `setup/model-tiers.json`, `pyproject.toml`, or `.github/workflows/e2e.yml` — `.github/workflows/e2e.yml` on the `homelab` runner |
 | Compose smoke | <3 min | $0 | gated by `ENABLE_COMPOSE_SMOKE=true` — runs on demand only |
 | Evals (baseline) | 10-20 min | ~$2-5 | `.github/workflows/nightly-evals.yml` — cron 09:00 UTC + `workflow_dispatch` |
 | Model-swap report | 15-30 min | ~$5-10 | `.github/workflows/model-swap.yml` — `workflow_dispatch` only |
@@ -76,7 +85,7 @@ string, not what the model does with it.
 
 ---
 
-## The Ten Bug Classes
+## The Eleven Bug Classes
 
 Each bug class leaves a permanent test. Fix -> regression test ->
 `tests/regressions/bug_<NNNN>_<slug>/`. The catalog grows; we don't relearn.
@@ -85,7 +94,7 @@ Each bug class leaves a permanent test. Fix -> regression test ->
 |---|---|---|---|
 | 1 | psycopg3 UUID coercion | `tests/regressions/bug_0570_reminder_uuid_coercion/test_uuid_round_trip.py` | Insert via `reminders.enqueue`, dispatch, assert no `AttributeError`, `state='delivered'`, correct recipient kwarg |
 | 2 | LLM capability denial | `tests/unit/test_no_capability_denial.py` (structural) + `tests/evals/fixtures/chat/missed_reminder.yaml` exercised via `tests/evals/test_evals.py` | `regex_forbid` denial phrasing; judge score >= 0.7 for capability acknowledgment |
-| 3 | Image orphaned from delivery | `tests/unit/test_send_node_attachment.py` | `attachment_paths=[path]` passed to `send_message`; not just `mock.called` |
+| 3 | Image orphaned from delivery | `tests/integration/test_reward_image_delivery.py` (follow-up; tracked in `tests/regressions/bug_0563_reward_image_orphan/README.md`) | `mock.call_args.kwargs["attachment_path"]` is non-None AND file exists; not just `mock.called` |
 | 4 | Auth gate | `tests/unit/test_signal_listener_auth.py` | Unauthorized peer rejected; no state-table writes |
 | 5 | Deployment gaps | `tests/smoke/test_compose_round_trip.py` | Full compose stack boots; reminder_outbox table created when migrations run; env vars threaded |
 | 6 | Dead-code wiring | `tests/unit/test_reachability.py` (AST scan) | Every public top-level function in scanned dirs has >= 1 call site outside its definition |
@@ -93,13 +102,14 @@ Each bug class leaves a permanent test. Fix -> regression test ->
 | 8 | mypy suppression sprawl | `tests/unit/test_mypy_suppression_budget.py` | Count of `ignore_errors = true` overrides matches frozen baseline; can only shrink |
 | 9 | Production dependency pin staleness | `tests/unit/test_signal_cli_pin.py` | Image pinned by immutable digest AND a scheduled refresh workflow exists and targets the same image |
 | 10 | Silent degradation behind intentional exception-swallowing, masked by a permissive mock | `tests/unit/test_rewards.py` (`TestImageGenerationCallContract`) | Assert outbound kwargs shape; validate each kwarg against `inspect.signature(real_dependency)` — mock return value is same whether call is valid or not |
+| 11 | Cross-turn state handoff | `tests/e2e/scenarios/` | Turn N writes state (LangGraph checkpoint or `recent_outbound`); turn N+M reads it. No single-node test can see the seam — the assertion is the per-turn invariant set in `tests/support/invariants.py`, checked after every turn of every scenario |
 
 ---
 
 ## Structural Lints (unit speed, always runs)
 
 Six lints in `tests/unit/` that run without LLM or Postgres. Five catch five
-of the ten bug classes directly; one ensures the pre-commit Python gate stays
+of the eleven bug classes directly; one ensures the pre-commit Python gate stays
 wired.
 
 ### `test_migration_filenames.py`
@@ -278,6 +288,58 @@ check_in, complete, classify_intent).
 
 ---
 
+## Conversation Layer: Harness and Invariants
+
+`tests/e2e/` drives scripted multi-turn conversations. `tests/support/harness.py`
+holds the `Conversation` driver, `tests/support/invariants.py` the per-turn
+checks, and `tests/support/` the shared Notion/Signal doubles. Full contributor
+guide in `tests/e2e/README.md`.
+
+**Entry is through `SignalListener`, not `graph.ainvoke`.** Three things under
+test sit upstream of the graph: `thread_id` derivation from the peer E.164,
+`_extract_peer_and_text` (production's only inbound parser), and the auth gate
+plus the receipt/typing background tasks that run concurrently with `ainvoke`.
+Entering at the graph would make the test assert its own assumption about
+checkpoint partitioning — a change to that derivation would leave every chain
+green while every real conversation silently lost its history.
+
+**Assert side effects, not text.** Under a real model the wording of a reply is
+not reproducible; which Notion page was written, whether `recent_outbound.awaiting_reply`
+was cleared, what the checkpoint holds, and how many messages went out all are.
+The `Expect` object is deliberately side-effect-heavy, and carries no `judge` or
+`shame_safe` kind — judged text quality belongs to the eval layer.
+
+**Misroutes are a distinct failure category.** An intent mismatch raises
+`IntentMisrouteError`, never a generic assertion, and is never retried: retrying hides
+the model drift this layer exists to detect.
+
+**Reminders are delivered by the real worker.** `Conversation.deliver_reminder()`
+calls `reminders.enqueue` then `dispatch_due_reminders`. The `INSERT INTO
+recent_outbound` inside `reminder_worker` is that table's only writer and the row
+a later COMPLETE turn resolves against; a fixture `INSERT` in a test would keep
+passing with that production INSERT deleted, which is exactly the pre-#641 state
+of the world.
+
+**The clock is never faked.** `complete_node` reads `datetime.now(UTC)` while
+Postgres reads `now()`; faking one invents a skew that exists in no deployment.
+Staleness is produced by writing backdated values — `age_active_task` through
+`graph.aupdate_state`, `expire_recent_outbound` through SQL.
+
+The seven invariants below run after every turn of every scenario, so a
+regression trips as soon as any scenario walks past it:
+
+| # | Invariant | What it catches |
+|---|---|---|
+| I1 | No `<node>_node.error`, `classify_intent.error`, `signal_listener.graph_error`, or `*_failed` event | A node taking its exception fallback. The fallback is shame-safe and reads fine, which is what makes this invisible without the check |
+| I2 | A draft carrying `notion_page_title` delivers that title; no `{task}`/`[task]` reaches the user | A suggestion the user cannot act on because it names no task |
+| I3 | No `update_status` / `update_property` / `complete_reminder` targets a page the peer was never offered | The generalized form of #641's wrong-page completion |
+| I4 | A COMPLETE turn resolves every reminder that was awaiting a reply; other intents do not clear context they did not answer | An unresolved reminder that the next "done" completes a second time |
+| I5 | `(recipient, idempotency_key)` unique across the conversation | The duplicate celebration; checked conversation-wide because the second send may be several turns later |
+| I6 | No banned shame phrase in delivered text | Regression in shame-safety at the delivery surface, post-substitution |
+| I7 | Each LLM caller used its documented tier | A node downgraded to `cheap` gets `think=False` and `max_tokens=1024`, truncating structured JSON mid-object |
+
+---
+
 ## Integration Mock Discipline
 
 Integration tests that mock outbound side effects (Signal send, Notion write,
@@ -342,7 +404,7 @@ behavioral correctness. See `docs/python-rewrite/llm-observability.md`.
 
 ## Test Discipline Rules (Developer-Facing)
 
-These are the six contract clauses the test reviewer enforces (see
+These are the eleven contract clauses the test reviewer enforces (see
 `.github/scripts/review/prompts/test.md` for the authoritative enforcement spec):
 
 1. **New public function in `app/tools/`, `app/graph/nodes/`, `app/scheduler/`, `app/ingress/`** must have:
