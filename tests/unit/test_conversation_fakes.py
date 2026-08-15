@@ -274,6 +274,30 @@ async def test_eval_mode_discards_writes() -> None:
     assert fake.writes == []
 
 
+async def test_eval_mode_discards_creates_too() -> None:
+    """A created page must not become visible to a later read.
+
+    Creates are writes. If one leaked into the store, a node that creates a task
+    would change what a subsequent read in the same fixture returns — the
+    fixture would stop being the sole definition of the world, which is the
+    contract `filter_reads=False` exists to hold. The previous eval stub mapped
+    `create_task` to the same discard function as every other write and returned
+    `{}`; this keeps that exact shape.
+    """
+    fake = FakeNotion([{"id": "page-a", "title": "First"}], discard_writes=True, filter_reads=False)
+
+    created = await fake.create_task(title="Brand new", work_type="Independent")
+    reminder = await fake.create_reminder(
+        title="Also new", remind_at_iso="2026-08-07T17:00:00+00:00"
+    )
+
+    assert created == {}
+    assert reminder == {}
+    assert set(fake.pages) == {"page-a"}
+    assert fake.writes == []
+    assert [page["id"] for page in (await fake.query_pending())["results"]] == ["page-a"]
+
+
 async def test_eval_mode_tolerates_writes_to_unknown_pages() -> None:
     """Eval fixtures let a node create then update a page the fixture never declared."""
     fake = FakeNotion([], discard_writes=True, filter_reads=False)

@@ -117,7 +117,12 @@ class FakeNotion:
     ) -> None:
         """
         Args:
-            discard_writes: Accept mutations but neither apply nor record them.
+            discard_writes: Accept every write but neither apply nor record it,
+                and return `{}` rather than a page id. That covers creates as
+                well as updates: a created page that became visible to a later
+                read would let one eval fixture's node change what a subsequent
+                read returns, which is the same "the fixture defines the world"
+                contract the reads honour.
             filter_reads: Apply each verb's real filter and urgency sort. Set
                 False for eval semantics, where every read returns the fixture's
                 declared tasks verbatim in declaration order — the fixture, not
@@ -217,6 +222,8 @@ class FakeNotion:
         sequence: int | None = None,
         due_at_iso: str | None = None,
     ) -> dict[str, Any]:
+        if self.discard_writes:
+            return {}
         page_id = self.seed_task(
             title=title,
             work_type=work_type,
@@ -239,6 +246,8 @@ class FakeNotion:
         work_type: str = "Independent",
         energy_required: str = "Low",
     ) -> dict[str, Any]:
+        if self.discard_writes:
+            return {}
         page_id = self.seed_task(
             title=title,
             work_type=work_type,
