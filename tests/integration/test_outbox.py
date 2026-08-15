@@ -45,10 +45,13 @@ async def db_conn() -> Any:
             await conn.execute(mig.read_text())  # type: ignore[arg-type]
         await conn.commit()
 
-        # Clean state before each test (child table first to satisfy FK)
+        # Clean state before each test (child table first to satisfy FK).
+        # ops_alerts is the queue table; ops_alerts_throttle only records
+        # delivery times. Truncating the throttle without the queue leaves
+        # alerts from earlier tests visible to later ones.
         await conn.execute(
             "TRUNCATE reminder_scheduling_ledger, deadline_task_peers, reminder_outbox, "
-            "recent_outbound, ops_alerts_throttle"
+            "recent_outbound, ops_alerts, ops_alerts_throttle"
         )
         await conn.commit()
 
@@ -118,7 +121,9 @@ async def test_retry_on_signal_failure(db_conn: Any) -> None:
 
     call_count = 0
 
-    async def flaky_signal(recipient: str, message: str) -> dict[str, Any]:
+    async def flaky_signal(
+        recipient: str, message: str, *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
         nonlocal call_count
         call_count += 1
         if call_count < 4:
@@ -264,7 +269,9 @@ async def test_dead_reminder_triggers_ops_alert(db_conn: Any, monkeypatch: pytes
     from app.scheduler.reminder_worker import _MAX_ATTEMPTS, dispatch_due_reminders
     from app.tools import reminders
 
-    async def always_fail(recipient: str, message: str) -> dict[str, Any]:
+    async def always_fail(
+        recipient: str, message: str, *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
         raise RuntimeError("always fails")
 
     rid = await reminders.enqueue(db_conn, **_make_reminder())
@@ -285,16 +292,51 @@ async def test_dead_reminder_triggers_ops_alert(db_conn: Any, monkeypatch: pytes
 
     assert row[0] == "dead"
 
-    # Ops alert should be in the throttle table
+    # The dead reminder enqueues an alert; it does NOT write the throttle row.
+    # _throttled_ops_alert defers that to ops_alerts.drain(), which writes it
+    # only after the alert is actually delivered — so a queued-but-undelivered
+    # alert cannot suppress the next one.
     async with db_conn.cursor() as cur:
         await cur.execute(
-            "SELECT alert_kind FROM ops_alerts_throttle WHERE alert_kind = 'reminder_dead'"
+            "SELECT severity, state FROM ops_alerts WHERE alert_kind = 'reminder_dead'"
         )
-        throttle_row = await cur.fetchone()
+        alerts = await cur.fetchall()
 
-    assert throttle_row is not None, "ops alert throttle row should exist after dead reminder"
+    assert len(alerts) == 1, "dead reminder should enqueue exactly one ops alert"
+    assert alerts[0][0] == "critical"
+    assert alerts[0][1] == "pending"
 
-    # Running again should NOT insert another throttle row (throttled)
+    async with db_conn.cursor() as cur:
+        await cur.execute(
+            "SELECT COUNT(*) FROM ops_alerts_throttle WHERE alert_kind = 'reminder_dead'"
+        )
+        assert (await cur.fetchone())[0] == 0, "throttle row is drain's to write, not the worker's"
+
+    # Deliver the queued alert. drain() writes the throttle record on success.
+    sent: list[str] = []
+
+    async def capture_send(
+        recipient: str, message: str, *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        sent.append(message)
+        return {"timestamp": 1}
+
+    monkeypatch.setenv("OPS_ALERT_SIGNAL_NUMBER", "+15550009999")
+    monkeypatch.setattr("app.tools.signal_client.send_message", capture_send)
+
+    from app.tools import ops_alerts
+
+    await ops_alerts.drain()
+
+    assert len(sent) == 1, "the pending alert should have been delivered"
+
+    async with db_conn.cursor() as cur:
+        await cur.execute(
+            "SELECT COUNT(*) FROM ops_alerts_throttle WHERE alert_kind = 'reminder_dead'"
+        )
+        assert (await cur.fetchone())[0] == 1
+
+    # A second dead reminder now finds a fresh throttle record and stays quiet.
     await db_conn.execute(
         """
         INSERT INTO reminder_outbox (id, notion_page_id, peer, body, due_at, state, idempotency_key)
@@ -304,7 +346,6 @@ async def test_dead_reminder_triggers_ops_alert(db_conn: Any, monkeypatch: pytes
     )
     await db_conn.commit()
 
-    # Exhaust attempts on second reminder — alert should be throttled
     for _ in range(_MAX_ATTEMPTS):
         await db_conn.execute(
             "UPDATE reminder_outbox SET due_at = now() - interval '1 second' WHERE state != 'dead'"
@@ -313,8 +354,7 @@ async def test_dead_reminder_triggers_ops_alert(db_conn: Any, monkeypatch: pytes
         await dispatch_due_reminders(db_conn, signal_send_fn=always_fail)
 
     async with db_conn.cursor() as cur:
-        await cur.execute("SELECT COUNT(*) FROM ops_alerts_throttle WHERE alert_kind = 'reminder_dead'")
+        await cur.execute("SELECT COUNT(*) FROM ops_alerts WHERE alert_kind = 'reminder_dead'")
         count = (await cur.fetchone())[0]
 
-    # Still just one row (throttle prevents duplicates)
-    assert count == 1
+    assert count == 1, "the throttle should have suppressed the second dead-reminder alert"

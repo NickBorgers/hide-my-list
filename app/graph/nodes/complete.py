@@ -24,7 +24,6 @@ import structlog
 
 from app.graph.nodes._task_match import (
     DedupCandidate,
-    dice_coefficient,
     normalize_title_tokens,
     open_non_reminder_tasks,
     parse_match_response,
@@ -48,10 +47,6 @@ _TITLE_MATCH_CONFIDENCE_THRESHOLD = 0.90
 # scores exactly 0.4 and would sit on the boundary. The score is a recall
 # device for building the model's candidate set — it never authorizes a write.
 _TITLE_MATCH_MIN_SCORE = 0.30
-
-# Overlap at which a named task is taken to be the active task the user was
-# already working on, short-circuiting the Notion and model round-trips.
-_ACTIVE_TASK_AGREEMENT_SCORE = 0.40
 
 # Subtracted from the user's message only, never from a task title. These words
 # say "I finished something" without saying which something; leaving them in
@@ -211,16 +206,6 @@ def _task_reference_tokens(incoming: str) -> set[str]:
     non-empty result only earns a lookup, never a write.
     """
     return normalize_title_tokens(incoming) - _COMPLETION_WORDS
-
-
-def _agrees_with_active_task(residue: set[str], active: _CompletionTarget | None) -> bool:
-    """True when the named task is the one the user is already working on."""
-    if active is None or not residue:
-        return False
-    return (
-        dice_coefficient(residue, normalize_title_tokens(active.task_title))
-        >= _ACTIVE_TASK_AGREEMENT_SCORE
-    )
 
 
 def _build_completion_match_prompt(incoming: str, candidates: list[DedupCandidate]) -> str:

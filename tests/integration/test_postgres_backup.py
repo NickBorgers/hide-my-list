@@ -40,9 +40,35 @@ def _docker_compose_available() -> bool:
     return result.returncode == 0
 
 
+def _compose_postgres_running() -> bool:
+    """Check that the compose stack's postgres service is actually up.
+
+    backup.sh shells out to `docker compose exec postgres pg_dump`, so a
+    reachable DATABASE_URL is not sufficient — it has to be *this* compose
+    stack. Without this check the module skipped only when docker was missing
+    and otherwise failed with `service "postgres" is not running` anywhere the
+    database came from somewhere else: a CI service container, or a developer's
+    standalone container. The module docstring has always stated the compose
+    stack as a requirement; this makes the guard match it.
+    """
+    if not _HAS_DOCKER:
+        return False
+    result = subprocess.run(
+        ["docker", "compose", "-f", _COMPOSE_FILE, "ps",
+         "--services", "--filter", "status=running"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return result.returncode == 0 and "postgres" in result.stdout.split()
+
+
 pytestmark = pytest.mark.skipif(
-    not _HAS_DB or not _HAS_DOCKER or not _docker_compose_available(),
-    reason="Requires DATABASE_URL and docker compose to be available",
+    not _HAS_DB
+    or not _HAS_DOCKER
+    or not _docker_compose_available()
+    or not _compose_postgres_running(),
+    reason="Requires DATABASE_URL and a running docker compose postgres service",
 )
 
 

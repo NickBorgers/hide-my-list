@@ -48,17 +48,23 @@ async def test_orphan_job_removed_on_reconcile(clean_scheduler_db: None) -> None
         # Insert a phantom job directly into the jobstore DB
         # APScheduler's SQLAlchemy jobstore uses a 'apscheduler_jobs' table.
         # We insert a minimal row to simulate an orphan.
+        #
+        # next_run_time is DOUBLE PRECISION in APScheduler v3's schema — a POSIX
+        # timestamp, not a SQL timestamp. Passing a datetime literal here raises
+        # InvalidTextRepresentation.
         import psycopg
+
+        far_future_epoch = 4102444800.0  # 2100-01-01T00:00:00Z
 
         conn_str = os.environ["DATABASE_URL"]
         async with await psycopg.AsyncConnection.connect(conn_str, autocommit=True) as conn:
             await conn.execute(
                 """
                 INSERT INTO apscheduler_jobs (id, next_run_time, job_state)
-                VALUES ('phantom_orphan_job', '2099-01-01 00:00:00.000000', %s)
+                VALUES ('phantom_orphan_job', %s, %s)
                 ON CONFLICT (id) DO NOTHING
                 """,
-                (b"phantom",),
+                (far_future_epoch, b"phantom"),
             )
 
         # Note: the phantom may not show up via get_jobs() until scheduler re-reads
