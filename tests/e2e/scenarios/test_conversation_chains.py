@@ -110,7 +110,7 @@ async def test_a_follow_up_turn_reads_the_previous_one(
         "classifier would see no prior context"
     )
 
-    follow_up = await conversation.say("by Friday")
+    follow_up = await conversation.say("by Friday", expect=Expect(sent_count=1))
 
     later = [
         str(getattr(message, "content", ""))
