@@ -69,7 +69,7 @@ async def test_the_authorized_peer_still_works_after_an_intrusion(
 
     await conversation.say(
         "done",
-        expect=Expect(intent="COMPLETE", notion_status={task: "Completed"}),
+        expect=Expect(intent="COMPLETE", notion_status={task: "Completed"}, sent_count=1),
     )
 
 
@@ -87,7 +87,7 @@ async def test_two_peers_keep_separate_checkpoints(conversation_pair: tuple) -> 
     await first.seed_active_task(page_id=first_task, title="Change the air filter")
     await second.seed_active_task(page_id=second_task, title="Send the rent cheque")
 
-    await first.say("done", expect=Expect(intent="COMPLETE", notion_status={first_task: "Completed"}))
+    await first.say("done", expect=Expect(intent="COMPLETE", notion_status={first_task: "Completed"}, sent_count=1))
 
     # The second peer's checkpoint must be untouched by the first peer's turn.
     second_state = await second.state()
@@ -97,7 +97,7 @@ async def test_two_peers_keep_separate_checkpoints(conversation_pair: tuple) -> 
     assert second.notion.status_of(second_task) == "Pending"
 
     await second.say(
-        "done", expect=Expect(intent="COMPLETE", notion_status={second_task: "Completed"})
+        "done", expect=Expect(intent="COMPLETE", notion_status={second_task: "Completed"}, sent_count=1)
     )
 
     assert (await first.state()).get("active_task") is None

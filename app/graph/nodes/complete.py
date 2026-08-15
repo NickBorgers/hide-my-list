@@ -474,7 +474,11 @@ async def complete_node(state: State) -> dict[str, Any]:
 
         if target.source == "recent_outbound" and target.signal_timestamp is not None:
             try:
-                await _clear_recent_outbound(peer, target.signal_timestamp, page_id)
+                await _clear_recent_outbound(
+                    peer=peer,
+                    signal_timestamp=target.signal_timestamp,
+                    notion_page_id=page_id,
+                )
             except Exception:
                 log.warning(
                     "complete_node.recent_outbound_clear_failed",

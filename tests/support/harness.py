@@ -96,6 +96,8 @@ class TurnResult:
     awaiting_reply_before: int
     awaiting_reply_after: int
     graph_invoked: bool
+    resolved_page_id: str | None = None
+    resolved_page_awaiting_after: int | None = None
 
     @property
     def intent(self) -> str | None:
@@ -242,6 +244,19 @@ class Conversation:
                  WHERE peer = %s AND awaiting_reply = true AND expires_at > now()
                 """,
                 (self.peer,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def awaiting_reply_count_for_page(self, page_id: str) -> int:
+        async with self.db() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT count(*) FROM recent_outbound
+                 WHERE peer = %s AND notion_page_id = %s
+                   AND awaiting_reply = true AND expires_at > now()
+                """,
+                (self.peer, page_id),
             )
             row = await cursor.fetchone()
         return int(row[0]) if row else 0
@@ -402,6 +417,22 @@ class Conversation:
             if write.op in ("create_task", "create_reminder"):
                 self.offered.add(write.page_id)
 
+        resolved_page_id: str | None = None
+        resolved_page_awaiting_after: int | None = None
+        for entry in logs:
+            if (
+                str(entry.get("event") or "") == "complete_node.done"
+                and str(entry.get("source") or "") == "recent_outbound"
+            ):
+                pid = str(entry.get("page_id") or "")
+                if pid:
+                    resolved_page_id = pid
+                break
+        if resolved_page_id:
+            resolved_page_awaiting_after = await self.awaiting_reply_count_for_page(
+                resolved_page_id
+            )
+
         result = TurnResult(
             text=" ".join(message.body for message in sent),
             sent=sent,
@@ -411,6 +442,8 @@ class Conversation:
             awaiting_reply_before=awaiting_before,
             awaiting_reply_after=await self.awaiting_reply_count(),
             graph_invoked=graph_invoked,
+            resolved_page_id=resolved_page_id,
+            resolved_page_awaiting_after=resolved_page_awaiting_after,
         )
         assert_turn_invariants(self, result, expect)
         assert_expectations(self, result, expect)

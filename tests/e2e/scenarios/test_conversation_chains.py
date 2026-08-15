@@ -72,7 +72,7 @@ async def test_a_task_added_this_turn_can_be_reminded_about(
     """
     writes_before = conversation.notion.mark()
 
-    await conversation.say("add a task: sweep the porch", expect=Expect(intent="ADD_TASK"))
+    await conversation.say("add a task: sweep the porch", expect=Expect(intent="ADD_TASK", sent_count=1))
 
     created = [
         write.page_id
@@ -87,7 +87,7 @@ async def test_a_task_added_this_turn_can_be_reminded_about(
     )
     assert delivery.notion_page_id == page_id
 
-    await conversation.say("finished", expect=Expect(intent="COMPLETE", db_awaiting_reply=0))
+    await conversation.say("finished", expect=Expect(intent="COMPLETE", db_awaiting_reply=0, sent_count=1))
 
 
 async def test_a_follow_up_turn_reads_the_previous_one(
@@ -101,7 +101,7 @@ async def test_a_follow_up_turn_reads_the_previous_one(
     the checkpoint the classifier reads — rather than asserting a particular
     intent label, which is the model's call to make.
     """
-    await conversation.say("add a task: call the dentist", expect=Expect(intent="ADD_TASK"))
+    await conversation.say("add a task: call the dentist", expect=Expect(intent="ADD_TASK", sent_count=1))
 
     state = await conversation.state()
     history = [str(getattr(message, "content", "")) for message in state.get("messages", [])]

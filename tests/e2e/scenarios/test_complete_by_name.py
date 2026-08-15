@@ -42,6 +42,7 @@ async def test_a_named_task_resolves_with_no_context_at_all(
             intent="COMPLETE",
             notion_status={dishes: "Completed"},
             notion_untouched=[decoy],
+            sent_count=1,
             regex_forbid=[r"(?i)which task"],
         ),
     )
@@ -70,6 +71,7 @@ async def test_a_named_task_outranks_a_different_active_task(
             intent="COMPLETE",
             notion_status={named: "Completed"},
             notion_untouched=[held],
+            sent_count=1,
         ),
     )
 
@@ -93,7 +95,7 @@ async def test_a_bare_done_still_uses_the_active_task(
     await conversation.seed_active_task(page_id=task, title="Empty the dishwasher")
 
     result = await conversation.say(
-        "done", expect=Expect(intent="COMPLETE", notion_status={task: "Completed"})
+        "done", expect=Expect(intent="COMPLETE", notion_status={task: "Completed"}, sent_count=1)
     )
 
     callers = [

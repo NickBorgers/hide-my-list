@@ -118,7 +118,19 @@ async def test_complete_prefers_unresolved_recent_outbound_over_stale_active_tas
     # The page id is passed so the clear resolves every live row for that task,
     # not only the delivery the user replied to. A sibling row left behind is an
     # orphan a later unrelated "done" would resolve.
-    clear_mock.assert_awaited_once_with("<recipient>", 123456789, "<page_A>")
+    clear_call = clear_mock.await_args
+    assert clear_call is not None
+    assert not clear_call.args, "expected keyword-only call to _clear_recent_outbound"
+    sig_params = set(inspect.signature(complete_module._clear_recent_outbound).parameters)
+    assert {"peer", "signal_timestamp", "notion_page_id"} <= sig_params, (
+        "_clear_recent_outbound signature drifted from expected parameters"
+    )
+    assert set(clear_call.kwargs) == {"peer", "signal_timestamp", "notion_page_id"}
+    assert clear_call.kwargs == {
+        "peer": "<recipient>",
+        "signal_timestamp": 123456789,
+        "notion_page_id": "<page_A>",
+    }
     assert result["active_task"] is None
     assert result["streak"] == 5
     assert result["pending_outbound"][0]["notion_page_id"] == "<page_A>"
