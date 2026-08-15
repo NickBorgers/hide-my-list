@@ -155,19 +155,31 @@ def _assert_no_unoffered_write(conv: Conversation, result: TurnResult) -> None:
 
 
 def _assert_awaiting_reply_resolution(result: TurnResult) -> None:
-    """A COMPLETE turn must consume the reminders that were awaiting a reply.
+    """A COMPLETE turn must consume a reminder that was awaiting a reply.
 
-    Leaving a live row behind is the first half of #641: the next "done" resolves
-    the same stale reminder again. Any other intent must not silently clear
-    context it did not answer.
+    Resolving nothing is the first half of #641: the row stays live and the next
+    "done" resolves the same stale reminder again. Any other intent must not
+    silently clear context it did not answer.
+
+    The check is "strictly fewer", not "zero". `_clear_recent_outbound` resolves
+    one row, keyed on its exact signal_timestamp, and a page can legitimately
+    have several reminders in flight — migration 0007 dropped the UNIQUE on
+    `reminder_outbox.notion_page_id` precisely so deadline milestones could
+    stack. Demanding zero would make the invariant wrong by construction on that
+    shape.
+
+    Known gap, deliberately not asserted here because fixing it is a production
+    change rather than a test one: when two live rows exist, the one left behind
+    is an orphan that a later unrelated "done" can be misattributed to. See
+    `test_redelivering_a_reminder_completes_it_once`.
     """
-    if result.intent == "COMPLETE":
-        assert result.awaiting_reply_after == 0 or result.awaiting_reply_before == 0, (
-            f"a COMPLETE turn left {result.awaiting_reply_after} reminder(s) still "
-            f"awaiting a reply (was {result.awaiting_reply_before}); the next 'done' "
-            "would resolve the same row again"
+    if result.intent == "COMPLETE" and result.awaiting_reply_before > 0:
+        assert result.awaiting_reply_after < result.awaiting_reply_before, (
+            f"a COMPLETE turn resolved no reminder ({result.awaiting_reply_before} "
+            f"awaiting before and after); the next 'done' would resolve the same "
+            "row again"
         )
-    else:
+    elif result.intent != "COMPLETE":
         assert result.awaiting_reply_after >= result.awaiting_reply_before, (
             f"a {result.intent} turn cleared reminder context it did not answer "
             f"({result.awaiting_reply_before} -> {result.awaiting_reply_after})"

@@ -15,6 +15,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -114,11 +115,17 @@ def peer() -> str:
     return f"+1555{uuid.uuid4().int % 10_000_000:07d}"
 
 
-@pytest.fixture()
-async def conversation(
-    peer: str, database_url: str, call_meter: _CallMeter
-) -> AsyncIterator[Conversation]:
-    """A live conversation: real graph, real Postgres, real LLM, faked I/O."""
+@asynccontextmanager
+async def _live_conversations(
+    peers: list[str], database_url: str, call_meter: _CallMeter
+) -> AsyncIterator[list[Conversation]]:
+    """Stand up one listener, one graph, and one faked world for `peers`.
+
+    Everything except the peer identity is shared, which mirrors production:
+    one signal-cli account, one single-tenant Notion database, one checkpointer.
+    Only `thread_id` — the peer E.164 — separates the conversations, which is
+    exactly the property scenario 7 is testing.
+    """
     from app.graph.graph import build_graph, build_postgres_checkpointer
     from app.ingress import signal_listener as listener_module
     from app.ingress.signal_listener import SignalListener
@@ -144,21 +151,23 @@ async def conversation(
             listener = SignalListener(
                 account="+15550009999",
                 graph=observed,
-                authorized_peers=frozenset({peer}),
+                authorized_peers=frozenset(peers),
             )
             runner = asyncio.create_task(listener.run())
             try:
-                conv = Conversation(
-                    peer=peer,
-                    graph=graph,
-                    observed=observed,
-                    notion=notion,
-                    signal=signal,
-                    database_url=database_url,
-                    enqueue_envelope=inbound.put_nowait,
-                    call_meter=call_meter,
-                )
-                yield conv
+                yield [
+                    Conversation(
+                        peer=peer,
+                        graph=graph,
+                        observed=observed,
+                        notion=notion,
+                        signal=signal,
+                        database_url=database_url,
+                        enqueue_envelope=inbound.put_nowait,
+                        call_meter=call_meter,
+                    )
+                    for peer in peers
+                ]
             finally:
                 runner.cancel()
                 try:
@@ -169,3 +178,22 @@ async def conversation(
         listener_module.receive_messages = original_receive
         undo_signal()
         undo_notion()
+
+
+@pytest.fixture()
+async def conversation(
+    peer: str, database_url: str, call_meter: _CallMeter
+) -> AsyncIterator[Conversation]:
+    """A live conversation: real graph, real Postgres, real LLM, faked I/O."""
+    async with _live_conversations([peer], database_url, call_meter) as conversations:
+        yield conversations[0]
+
+
+@pytest.fixture()
+async def conversation_pair(
+    peer: str, database_url: str, call_meter: _CallMeter
+) -> AsyncIterator[tuple[Conversation, Conversation]]:
+    """Two authorized peers behind one listener, one graph, one checkpointer."""
+    second = f"+1555{uuid.uuid4().int % 10_000_000:07d}"
+    async with _live_conversations([peer, second], database_url, call_meter) as conversations:
+        yield conversations[0], conversations[1]
