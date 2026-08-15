@@ -25,9 +25,15 @@ from typing import Any
 
 # Notion property names by value shape. Mirrors docs/notion-schema.md; the flat
 # shorthand key is derived from the property name (see _flat_key_for).
-_SELECT_PROPS = ("Work Type", "Energy Required", "Status")
+_SELECT_PROPS = ("Work Type", "Energy Required", "Status", "Reminder Status")
 _NUMBER_PROPS = ("Time Estimate (min)", "Rejection Count", "Urgency")
 _CHECKBOX_PROPS = ("Is Reminder",)
+# (notion_prop_name, flat_key) — emitted as {"date": {"start": value}} when present.
+_DATE_PROPS = (
+    ("Due At", "due_at_iso"),
+    ("Remind At", "remind_at"),
+    ("Reminder Scheduled At", "reminder_scheduled_at"),
+)
 
 # Stable namespace so generated page ids are reproducible across runs. A failing
 # chain then produces the same ids every time, which makes logs diffable.
@@ -97,6 +103,9 @@ def as_notion_page(task: Mapping[str, Any]) -> dict[str, Any]:
         key = _select_flat_key(prop)
         if key in task:
             props[prop] = {"checkbox": bool(task[key])}
+    for notion_prop, flat_key in _DATE_PROPS:
+        if flat_key in task and task[flat_key] is not None:
+            props[notion_prop] = {"date": {"start": task[flat_key]}}
     return {"id": task.get("id", ""), "properties": props}
 
 
@@ -272,6 +281,21 @@ class FakeNotion:
             )
         return {"results": [as_notion_page(page) for page in pages]}
 
+    def _query_sorted(
+        self,
+        predicate: Callable[[Mapping[str, Any]], bool],
+        sort_key: str,
+    ) -> dict[str, Any]:
+        """Like _query but sorts by a flat string key ascending (for date-sorted verbs)."""
+        if not self.filter_reads:
+            pages = list(self.pages.values())
+        else:
+            pages = sorted(
+                (page for page in self.pages.values() if predicate(page)),
+                key=lambda page: page.get(sort_key) or "",
+            )
+        return {"results": [as_notion_page(page) for page in pages]}
+
     async def query_pending(self) -> dict[str, Any]:
         return self._query(
             lambda page: page.get("status") == "Pending" and not page.get("is_reminder")
@@ -281,20 +305,37 @@ class FakeNotion:
         return self._query(lambda _page: True)
 
     async def query_due_reminders(self, before_iso: str | None = None) -> dict[str, Any]:
-        return self._query(
-            lambda page: bool(page.get("is_reminder"))
-            and page.get("status") == "Pending"
-            and page.get("reminder_status") == "pending"
-        )
+        def _predicate(page: Mapping[str, Any]) -> bool:
+            if not page.get("is_reminder"):
+                return False
+            if page.get("status") != "Pending":
+                return False
+            if page.get("reminder_status") != "pending":
+                return False
+            if before_iso is not None:
+                remind_at = page.get("remind_at")
+                if not remind_at or remind_at > before_iso:
+                    return False
+            return True
+
+        return self._query_sorted(_predicate, "remind_at")
 
     async def query_tasks_with_unscheduled_deadlines(self) -> dict[str, Any]:
-        return self._query(
-            lambda page: bool(page.get("due_at_iso")) and not page.get("reminder_scheduled")
+        return self._query_sorted(
+            lambda page: bool(page.get("due_at_iso"))
+            and not page.get("reminder_scheduled_at")
+            and page.get("status") != "Completed"
+            and not page.get("is_reminder"),
+            "due_at_iso",
         )
 
     async def query_scheduled_tasks_with_deadlines(self) -> dict[str, Any]:
-        return self._query(
-            lambda page: bool(page.get("due_at_iso")) and bool(page.get("reminder_scheduled"))
+        return self._query_sorted(
+            lambda page: bool(page.get("due_at_iso"))
+            and bool(page.get("reminder_scheduled_at"))
+            and page.get("status") != "Completed"
+            and not page.get("is_reminder"),
+            "due_at_iso",
         )
 
     async def get_page(self, page_id: str) -> dict[str, Any]:
@@ -339,7 +380,9 @@ class FakeNotion:
         if self.discard_writes:
             return {}
         page = self._require_page(page_id, "mark_reminder_scheduled")
-        page["reminder_scheduled"] = True
+        # Store an ISO timestamp so as_notion_page() can emit a real date value,
+        # matching the real client which PATCHes "Reminder Scheduled At" with a date.
+        page["reminder_scheduled_at"] = "2000-01-01T00:00:00+00:00"
         self._record("mark_reminder_scheduled", page_id, {})
         return {"id": page_id}
 

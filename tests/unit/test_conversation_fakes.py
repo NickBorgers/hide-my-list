@@ -203,6 +203,125 @@ async def test_fake_notion_query_pending_sorts_by_urgency_descending() -> None:
     assert titles == ["High", "Low"]
 
 
+async def test_fake_notion_query_due_reminders_filters_before_iso() -> None:
+    """query_due_reminders respects the before_iso cutoff."""
+    fake = FakeNotion()
+    await fake.create_reminder(title="Past", remind_at_iso="2026-08-01T10:00:00+00:00")
+    await fake.create_reminder(title="Future", remind_at_iso="2026-08-20T10:00:00+00:00")
+
+    results = (await fake.query_due_reminders(before_iso="2026-08-15T00:00:00+00:00"))["results"]
+    titles = [r["properties"]["Title"]["title"][0]["plain_text"] for r in results]
+    assert titles == ["Past"]
+
+
+async def test_fake_notion_query_due_reminders_excludes_completed() -> None:
+    """query_due_reminders excludes reminders that have already been completed."""
+    fake = FakeNotion()
+    created = await fake.create_reminder(title="Done", remind_at_iso="2026-08-01T10:00:00+00:00")
+    await fake.complete_reminder(created["id"], "sent")
+    await fake.create_reminder(title="Pending", remind_at_iso="2026-08-01T11:00:00+00:00")
+
+    results = (await fake.query_due_reminders(before_iso="2026-08-15T00:00:00+00:00"))["results"]
+    titles = [r["properties"]["Title"]["title"][0]["plain_text"] for r in results]
+    assert titles == ["Pending"]
+
+
+async def test_fake_notion_query_due_reminders_sorts_by_remind_at_ascending() -> None:
+    """query_due_reminders returns rows sorted by remind_at ascending (soonest first)."""
+    fake = FakeNotion()
+    await fake.create_reminder(title="Later", remind_at_iso="2026-08-10T12:00:00+00:00")
+    await fake.create_reminder(title="Sooner", remind_at_iso="2026-08-10T08:00:00+00:00")
+
+    results = (await fake.query_due_reminders(before_iso="2026-08-15T00:00:00+00:00"))["results"]
+    titles = [r["properties"]["Title"]["title"][0]["plain_text"] for r in results]
+    assert titles == ["Sooner", "Later"]
+
+
+async def test_fake_notion_query_due_reminders_remind_at_property_parseable() -> None:
+    """Rendered Remind At property matches the date shape the real client writes."""
+    fake = FakeNotion()
+    remind_ts = "2026-08-10T09:00:00+00:00"
+    await fake.create_reminder(title="Pick up prescription", remind_at_iso=remind_ts)
+
+    results = (await fake.query_due_reminders(before_iso="2026-08-15T00:00:00+00:00"))["results"]
+    assert len(results) == 1
+    remind_at_prop = results[0]["properties"].get("Remind At")
+    assert remind_at_prop is not None, "Remind At property missing from rendered reminder page"
+    assert remind_at_prop["date"]["start"] == remind_ts
+
+
+async def test_fake_notion_query_unscheduled_deadlines_excludes_completed() -> None:
+    """Completed tasks do not appear in query_tasks_with_unscheduled_deadlines."""
+    fake = FakeNotion()
+    pending_id = fake.seed_task(title="Pending", due_at_iso="2026-09-01T00:00:00+00:00")
+    completed_id = fake.seed_task(
+        title="Done", due_at_iso="2026-09-02T00:00:00+00:00", status="Completed"
+    )
+    _ = completed_id  # referenced to show intent
+
+    results = (await fake.query_tasks_with_unscheduled_deadlines())["results"]
+    ids = [r["id"] for r in results]
+    assert pending_id in ids
+    assert completed_id not in ids
+
+
+async def test_fake_notion_query_unscheduled_deadlines_excludes_reminders() -> None:
+    """Reminder pages (is_reminder=True) do not appear in unscheduled deadline results."""
+    fake = FakeNotion()
+    task_id = fake.seed_task(title="Real task", due_at_iso="2026-09-01T00:00:00+00:00")
+    reminder_id = fake.seed_task(
+        title="Reminder", due_at_iso="2026-09-01T00:00:00+00:00", is_reminder=True
+    )
+    _ = reminder_id
+
+    results = (await fake.query_tasks_with_unscheduled_deadlines())["results"]
+    ids = [r["id"] for r in results]
+    assert task_id in ids
+    assert reminder_id not in ids
+
+
+async def test_fake_notion_query_unscheduled_deadlines_sorts_by_due_at_ascending() -> None:
+    """query_tasks_with_unscheduled_deadlines returns rows sorted by due_at_iso ascending."""
+    fake = FakeNotion()
+    fake.seed_task(title="Later", due_at_iso="2026-09-10T00:00:00+00:00")
+    fake.seed_task(title="Sooner", due_at_iso="2026-09-01T00:00:00+00:00")
+
+    results = (await fake.query_tasks_with_unscheduled_deadlines())["results"]
+    titles = [r["properties"]["Title"]["title"][0]["plain_text"] for r in results]
+    assert titles == ["Sooner", "Later"]
+
+
+async def test_fake_notion_query_scheduled_deadlines_split_from_unscheduled() -> None:
+    """mark_reminder_scheduled moves a task from unscheduled to scheduled results."""
+    fake = FakeNotion()
+    page_id = fake.seed_task(title="File taxes", due_at_iso="2026-09-15T00:00:00+00:00")
+
+    assert len((await fake.query_tasks_with_unscheduled_deadlines())["results"]) == 1
+    assert len((await fake.query_scheduled_tasks_with_deadlines())["results"]) == 0
+
+    await fake.mark_reminder_scheduled(page_id)
+
+    assert len((await fake.query_tasks_with_unscheduled_deadlines())["results"]) == 0
+    assert len((await fake.query_scheduled_tasks_with_deadlines())["results"]) == 1
+
+
+async def test_fake_notion_due_at_parseable_by_reminder_scheduler() -> None:
+    """Due At rendered by as_notion_page() is parseable by the real scheduler's _parse_page."""
+    from app.scheduler.reminder_scheduler import _parse_page
+
+    fake = FakeNotion()
+    due_ts = "2026-09-01T12:00:00+00:00"
+    page_id = fake.seed_task(title="Submit report", urgency=80, due_at_iso=due_ts)
+    page = as_notion_page(fake.pages[page_id])
+
+    result = _parse_page(page)
+    assert result is not None, "reminder_scheduler._parse_page returned None for a page with Due At"
+    returned_id, deadline, urgency = result
+    assert returned_id == page_id
+    assert deadline.isoformat().startswith("2026-09-01")
+    assert urgency == 80
+
+
 async def test_fake_notion_create_task_returns_a_usable_page_id() -> None:
     """`intake_node` reads `notion_page["id"]` and later writes against it."""
     fake = FakeNotion()
