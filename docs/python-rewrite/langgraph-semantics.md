@@ -127,7 +127,7 @@ from three sources in priority order:
 
 When `recent_outbound` wins the context comparison, the node skips the Notion status write
 because the reminder worker already completes the reminder page at delivery time, rewards
-the matched page, and clears the matched row with `awaiting_reply = false`. A bare
+the matched page, and clears every live `recent_outbound` row for that peer and `notion_page_id` (`awaiting_reply = false`; `signal_timestamp` is the fallback when no page id is available). A bare
 completion message with empty residue (e.g. "done!") skips the Notion read and model call
 entirely and resolves from context only.
 

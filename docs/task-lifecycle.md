@@ -945,7 +945,7 @@ flowchart TD
 
 Delivery contract: at-least-once with idempotency. The `reminder_worker` holds a `SELECT FOR UPDATE SKIP LOCKED` lock during delivery; if the worker crashes between signal-cli accept and Postgres commit, the row re-enters delivery on next claim cycle. Duplicates are detectable via `signal_timestamp`. Valid reminders always use the same shame-safe copy: `Hey, time to [task]`.
 
-After successful reminder delivery, the worker inserts a `recent_outbound` row in Postgres (`notion_page_id`, `peer`, `signal_timestamp`, `awaiting_reply=true`, `expires_at`). That row bridges the gap between sessions: if the user replies "I did it" or "tomorrow at 9" in a fresh session, the agent can resolve the reply against the reminder it just sent instead of asking what they mean. The `recent_outbound` row is cleared or marked resolved once the reply is processed.
+After successful reminder delivery, the worker inserts a `recent_outbound` row in Postgres (`notion_page_id`, `peer`, `signal_timestamp`, `awaiting_reply=true`, `expires_at`). That row bridges the gap between sessions: if the user replies "I did it" or "tomorrow at 9" in a fresh session, the agent can resolve the reply against the reminder it just sent instead of asking what they mean. Every live `recent_outbound` row for that peer and `notion_page_id` is marked resolved once the reply is processed (`signal_timestamp` is the fallback when no page id is available).
 
 ### Timezone Handling
 

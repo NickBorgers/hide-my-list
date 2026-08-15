@@ -164,8 +164,9 @@ target by comparing:
 
 The more recent context wins. If the reminder row wins, the node rewards the
 matched `notion_page_id`, skips the Notion status write because reminder
-delivery already completes the reminder page, and marks the matched
-`recent_outbound` row `awaiting_reply = false`. If no confident target exists,
+delivery already completes the reminder page, and marks every live
+`recent_outbound` row for that peer and `notion_page_id` `awaiting_reply = false`
+(`signal_timestamp` is the fallback when no page id is available). If no confident target exists,
 the node asks which task the user means instead of completing a checkpointed
 task by default.
 
