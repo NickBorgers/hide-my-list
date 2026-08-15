@@ -32,7 +32,10 @@ on:
         type: string
 
 concurrency:
-  group: model-swap-${{ inputs.candidate_model }}
+  # Shared across every workflow that drives the homelab LLM proxy
+  # (nightly-evals, model-swap, e2e) — the host holds one Gemma model in RAM at
+  # a time, so concurrent runs thrash the cache and skew each other's latency.
+  group: homelab-llm-serial
   cancel-in-progress: false
 
 permissions:

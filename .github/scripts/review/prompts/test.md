@@ -15,7 +15,7 @@ Enforce test-rig maintenance: every PR that adds or modifies production code mus
 
 The authoritative rig architecture is documented in `docs/python-rewrite/test-rig.md`. If this PR adds a new bug class or extends the layer architecture defined there, update that document AND update this reviewer prompt to enforce the new contract.
 
-Lens — six contract clauses:
+Lens — eleven contract clauses:
 
 1. **New public function in `app/tools/`, `app/graph/nodes/`, `app/scheduler/`, `app/ingress/`** MUST have:
    - At least one integration test asserting reachability from an end-to-end flow (catches dead-code wiring, bug class 6 — `record_reward_feedback` pattern).
@@ -61,6 +61,14 @@ Lens — six contract clauses:
    - A test that asserts the outbound call's kwargs shape directly — not just the fallback return value, which looks identical whether the call was valid or not.
    - A test that validates each kwarg name against `inspect.signature(real_dependency)` so a parameter rejected or removed by a future SDK version fails loudly rather than silently falling back. (Catches bug class 10 — silent degradation behind intentional exception-swallowing; see `tests/unit/test_rewards.py` `TestImageGenerationCallContract` as the canonical template.)
 
+11. **PRs that add or modify E2E conversation scenarios, cross-turn invariants, or the conversation-layer harness** MUST:
+   - Enter scenarios through `SignalListener`, not `graph.ainvoke`, so `thread_id` derivation, the auth gate, and concurrent background tasks (read receipts, typing indicators) are under test.
+   - Assert side-effect shapes: which Notion page was written, whether `recent_outbound.awaiting_reply` cleared, what survived in the checkpoint, how many messages went out. Wording checks use `regex_require`/`regex_forbid`, not equality on model text.
+   - Cover any new cross-turn handoff — for example, a `recent_outbound` row written by `reminder_worker` several turns before the COMPLETE turn that resolves against it — with a full multi-turn scenario rather than a single-node call with a hand-built `State`.
+   - Never retry on `IntentMisrouteError`. Retrying hides the classifier drift this layer exists to detect. (Catches bug class 11 — cross-turn state handoff regressions.)
+   - Rely on the seven per-turn invariants in `tests/support/invariants.py`, which run automatically after every `conversation.say()` call; a new scenario that walks past a broken invariant will trip them without additional assertions.
+
+
 ## Scope
 
 This reviewer fires for PRs touching any of:
@@ -69,7 +77,8 @@ This reviewer fires for PRs touching any of:
 - `setup/model-tiers.json` — LLM swap surface
 - `app/prompts/**` — prompt templates (also covered above)
 - `docs/ai-prompts/**` — prompt spec sources (behavior contract changes may need eval fixtures)
-- `tests/**` — including dropped or weakened tests (clause 6); regression catalog entries
+- `tests/**` — including dropped or weakened tests (clause 6); regression catalog entries; E2E conversation scenarios
+- `tests/e2e/**` — E2E conversation scenarios and support harness (clause 11)
 - `.github/scripts/review/prompts/test.md` — this file (self-review)
 - `.github/scripts/review/schema/*.json` — reviewer + fix-result schemas; vocabulary changes here affect every reviewer's enforceable contract and must be reviewed for test-coverage implications
 - `docs/python-rewrite/test-rig.md` — authoritative rig architecture spec; changes here ripple into the contract clauses above

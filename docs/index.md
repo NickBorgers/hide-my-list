@@ -44,6 +44,7 @@ Per-file inventory of all CI and infrastructure files lives in [DEV-AGENTS.md](.
 
 - `update-signal-cli.yml` — Mondays 10:00 UTC + `workflow_dispatch`; resolves `bbernhard/signal-cli-rest-api:latest` digest from the registry and opens a refresh PR when it differs from the digest pinned in `docker/compose.yaml`
 - `update-ai-clis.yml` — refreshes Claude Code and Codex CLI pins weekly and re-vendors the upstream security audit prompt
+- `e2e.yml` — pull_request + `workflow_dispatch`; drives multi-turn conversation scenarios through the real graph on the homelab runner; gates cross-turn state regressions per-PR
 - `nightly-evals.yml` — cron 09:00 UTC; runs LLM behavior evals against current model tiers on the homelab runner
 - `model-swap.yml` — `workflow_dispatch` only; side-by-side baseline vs. candidate model comparison before tier changes
 

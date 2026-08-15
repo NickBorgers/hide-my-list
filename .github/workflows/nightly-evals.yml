@@ -26,7 +26,11 @@ on:
         type: string
 
 concurrency:
-  group: nightly-evals
+  # Shared across every workflow that drives the homelab LLM proxy
+  # (nightly-evals, model-swap, e2e). app/models.py records that the host can
+  # hold only one Gemma model in RAM at a time, so concurrent runs thrash the
+  # model cache and produce misleading latency for both.
+  group: homelab-llm-serial
   cancel-in-progress: false  # Never cancel an in-flight billing run.
 
 permissions:
