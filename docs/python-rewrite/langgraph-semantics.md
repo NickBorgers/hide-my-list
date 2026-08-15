@@ -28,14 +28,16 @@ invocations with different `thread_id`s do not share checkpoints.
 `config={"configurable": {"thread_id": peer}}` where `peer` is the E.164 Signal sender.
 This is the partition key. Two peers cannot share state.
 
-**Tested in:** `tests/spike/test_thread_isolation.py` — starts two concurrent
-`ainvoke` calls via `asyncio.gather`, verifies each peer's `pending_outbound` is
-independent.
+**Tested in:** `tests/e2e/scenarios/test_auth_and_isolation.py` — drives two
+authorized peers through one `SignalListener` and one checkpointer, interleaved,
+and verifies neither peer's `active_task` or outbound traffic reaches the other.
+Entering through the listener rather than calling `ainvoke` directly means the
+`thread_id` derivation itself is under test, not assumed by the caller.
 
 **Caveat:** Thread isolation is enforced by the caller passing distinct `thread_id` values.
 If the signal listener ever passes the same `thread_id` for two different peers (e.g., due
-to a bug), state would merge. Peer field validation at node entry is a future hardening item
-for Phase C — not yet implemented in Phase B intake.
+to a bug), state would merge. The e2e scenario covers that case because it enters through
+the listener, so a change to the derivation shows up as one peer reading another's task.
 
 ---
 
@@ -125,7 +127,7 @@ from three sources in priority order:
 
 When `recent_outbound` wins the context comparison, the node skips the Notion status write
 because the reminder worker already completes the reminder page at delivery time, rewards
-the matched page, and clears the matched row with `awaiting_reply = false`. A bare
+the matched page, and clears every live `recent_outbound` row for that peer and `notion_page_id` (`awaiting_reply = false`; `signal_timestamp` is the fallback when no page id is available). A bare
 completion message with empty residue (e.g. "done!") skips the Notion read and model call
 entirely and resolves from context only.
 

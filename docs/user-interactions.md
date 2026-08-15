@@ -821,7 +821,7 @@ If the next graph turn starts and the user replies to the reminder in shorthand,
 Example:
 - Agent sends: "Hey, time to clean up boxes before noon."
 - User opens a new session and says: "I did it"
-- Agent interprets that as completion of "clean up boxes before noon", delivers completion acknowledgment and reward (the reminder Notion page is already Completed at delivery time — no second Notion update), and clears the matched `recent_outbound` entry
+- Agent interprets that as completion of "clean up boxes before noon", delivers completion acknowledgment and reward (the reminder Notion page is already Completed at delivery time — no second Notion update), and clears every live `recent_outbound` row for that peer and `notion_page_id` (`signal_timestamp` is the fallback when no page id is available)
 
 `recent_outbound` rows expire. Once one has, a shorthand reply carries nothing
 to match and the agent falls back to the resolution order in Flow 3: a task

@@ -155,19 +155,26 @@ def _assert_no_unoffered_write(conv: Conversation, result: TurnResult) -> None:
 
 
 def _assert_awaiting_reply_resolution(result: TurnResult) -> None:
-    """A COMPLETE turn must consume the reminders that were awaiting a reply.
+    """A COMPLETE turn must resolve the rows for the page it completed.
 
-    Leaving a live row behind is the first half of #641: the next "done" resolves
-    the same stale reminder again. Any other intent must not silently clear
-    context it did not answer.
+    When source is recent_outbound, _clear_recent_outbound resolves by page —
+    migration 0007 dropped the UNIQUE on reminder_outbox.notion_page_id so
+    deadline milestones can stack, each delivery writing its own row. Any row
+    left behind for that page is an orphan a later unrelated "done" can be
+    misattributed to: the wrong task completed, and a reward celebrating work
+    already finished, which docs/reward-system.md forbids.
+
+    The check is scoped to the resolved page, not the peer-wide count, so an
+    unrelated live reminder for a different page does not cause a false failure.
+    Any other intent must not silently clear context it did not answer.
     """
-    if result.intent == "COMPLETE":
-        assert result.awaiting_reply_after == 0 or result.awaiting_reply_before == 0, (
-            f"a COMPLETE turn left {result.awaiting_reply_after} reminder(s) still "
-            f"awaiting a reply (was {result.awaiting_reply_before}); the next 'done' "
-            "would resolve the same row again"
+    if result.resolved_page_id is not None:
+        assert result.resolved_page_awaiting_after == 0, (
+            f"a COMPLETE turn left awaiting rows for the resolved page "
+            f"({result.resolved_page_id}); each is an orphan a later 'done' can "
+            "resolve, completing the wrong task and rewarding work already celebrated"
         )
-    else:
+    elif result.intent != "COMPLETE":
         assert result.awaiting_reply_after >= result.awaiting_reply_before, (
             f"a {result.intent} turn cleared reminder context it did not answer "
             f"({result.awaiting_reply_before} -> {result.awaiting_reply_after})"
