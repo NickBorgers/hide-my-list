@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from tests.support import FakeNotion, SignalSink, UnknownPageError, as_notion_page
+from tests.support import FakeNotion, SignalSink, UnknownPageError, as_notion_page, notion_fake
 from tests.support.notion_fake import FAKED_VERBS
 from tests.support.shame import find_banned_phrases
 
@@ -425,12 +425,25 @@ async def test_eval_mode_tolerates_writes_to_unknown_pages() -> None:
 
 
 def test_runner_still_exposes_its_private_translator_names() -> None:
-    """`_as_notion_page` and the prop tuples are part of the runner's surface."""
+    """`_as_notion_page` and the prop tuples are part of the runner's surface.
+
+    Asserts the re-export is the *same object*, not a frozen copy of the tuple's
+    contents. The point is that the eval runner and the conversation layer share
+    one reading of `docs/notion-schema.md`; pinning literals here would instead
+    make every legitimate addition to the property list look like a failure.
+    """
     from tests.evals import runner
 
     assert runner._as_notion_page is as_notion_page
-    assert runner._SELECT_PROPS == ("Work Type", "Energy Required", "Status")
-    assert runner._CHECKBOX_PROPS == ("Is Reminder",)
+    assert runner._SELECT_PROPS is notion_fake._SELECT_PROPS
+    assert runner._NUMBER_PROPS is notion_fake._NUMBER_PROPS
+    assert runner._CHECKBOX_PROPS is notion_fake._CHECKBOX_PROPS
+
+    # A representative property from each shape, so a tuple emptied by accident
+    # still fails.
+    assert "Status" in runner._SELECT_PROPS
+    assert "Urgency" in runner._NUMBER_PROPS
+    assert "Is Reminder" in runner._CHECKBOX_PROPS
 
 
 # ---------------------------------------------------------------------------
