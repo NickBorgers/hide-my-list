@@ -115,7 +115,10 @@ async def test_complete_prefers_unresolved_recent_outbound_over_stale_active_tas
         "work_type": "",
         "energy_required": "",
     }
-    clear_mock.assert_awaited_once_with("<recipient>", 123456789)
+    # The page id is passed so the clear resolves every live row for that task,
+    # not only the delivery the user replied to. A sibling row left behind is an
+    # orphan a later unrelated "done" would resolve.
+    clear_mock.assert_awaited_once_with("<recipient>", 123456789, "<page_A>")
     assert result["active_task"] is None
     assert result["streak"] == 5
     assert result["pending_outbound"][0]["notion_page_id"] == "<page_A>"

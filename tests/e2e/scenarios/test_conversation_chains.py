@@ -132,17 +132,15 @@ async def test_redelivering_a_reminder_completes_it_once(
     could stack. Each delivery writes its own `recent_outbound` row keyed on its
     own signal_timestamp.
 
-    `complete_node` resolves the most recent row and clears exactly that one, so
-    a reply consumes one reminder rather than all of them. That is asserted
-    below as the current behaviour.
-
-    **Known gap this scenario pins down rather than fixes.** The row left behind
-    is an orphan: it stays `awaiting_reply = true` for its full 24h window, and a
-    later unrelated "done" will resolve *it* — rewarding a task the user already
-    finished and completing the wrong thing, which is the shape of #641 all over
-    again. Closing it is a production change (resolve every live row for the
-    completed page, or scope the clear by page rather than timestamp), so it is
-    recorded here rather than silently absorbed.
+    One "done" finishes the task once, so it has to resolve *every* live row for
+    that page. Clearing only the delivery the user replied to leaves the sibling
+    live for its full 24h window, and the next unrelated "done" resolves that
+    orphan instead: the wrong task marked complete, and a reward celebrating work
+    already finished and already celebrated. `docs/reward-system.md` ties rewards
+    to actual completion, so a second celebration for one finished task is a spec
+    violation, not just untidy state — and for an ADHD user, feedback that does
+    not match what they did is exactly the confusing reinforcement the reward
+    system is built to avoid.
     """
     page = conversation.notion.seed_task(
         title="Pick up the prescription",
@@ -166,7 +164,9 @@ async def test_redelivering_a_reminder_completes_it_once(
         "mean the second send had no context to resolve against"
     )
 
-    result = await conversation.say("done", expect=Expect(intent="COMPLETE"))
+    result = await conversation.say(
+        "done", expect=Expect(intent="COMPLETE", db_awaiting_reply=0, sent_count=1)
+    )
 
     async with conversation.db() as conn:
         cursor = await conn.execute(
@@ -175,10 +175,10 @@ async def test_redelivering_a_reminder_completes_it_once(
         )
         row = await cursor.fetchone()
 
-    assert row is not None and row[0] == 1, (
-        "one reply should consume exactly one reminder row — resolving both "
-        "would reward a single 'done' twice"
+    assert row is not None and row[0] == 0, (
+        "both rows for the completed page must be resolved; a survivor is an "
+        "orphan the next unrelated 'done' would resolve, completing the wrong "
+        "task and celebrating work already celebrated"
     )
-    # Exactly one outbound reply, so the double delivery did not produce a
-    # double celebration.
+    # One reply, so the double delivery did not produce a double celebration.
     assert len(result.sent) == 1

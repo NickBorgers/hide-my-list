@@ -161,23 +161,21 @@ def _assert_awaiting_reply_resolution(result: TurnResult) -> None:
     "done" resolves the same stale reminder again. Any other intent must not
     silently clear context it did not answer.
 
-    The check is "strictly fewer", not "zero". `_clear_recent_outbound` resolves
-    one row, keyed on its exact signal_timestamp, and a page can legitimately
-    have several reminders in flight — migration 0007 dropped the UNIQUE on
-    `reminder_outbox.notion_page_id` precisely so deadline milestones could
-    stack. Demanding zero would make the invariant wrong by construction on that
-    shape.
-
-    Known gap, deliberately not asserted here because fixing it is a production
-    change rather than a test one: when two live rows exist, the one left behind
-    is an orphan that a later unrelated "done" can be misattributed to. See
-    `test_redelivering_a_reminder_completes_it_once`.
+    The check is "zero", including when a page has several reminders in flight.
+    Migration 0007 dropped the UNIQUE on `reminder_outbox.notion_page_id` so
+    deadline milestones could stack, and each delivery writes its own
+    `recent_outbound` row, so `_clear_recent_outbound` resolves by page rather
+    than by the single delivery the user happened to answer. Any row it leaves
+    behind is an orphan a later unrelated "done" can be misattributed to — the
+    wrong task completed, and a reward celebrating work already finished, which
+    `docs/reward-system.md` forbids.
     """
     if result.intent == "COMPLETE" and result.awaiting_reply_before > 0:
-        assert result.awaiting_reply_after < result.awaiting_reply_before, (
-            f"a COMPLETE turn resolved no reminder ({result.awaiting_reply_before} "
-            f"awaiting before and after); the next 'done' would resolve the same "
-            "row again"
+        assert result.awaiting_reply_after == 0, (
+            f"a COMPLETE turn left {result.awaiting_reply_after} reminder(s) awaiting "
+            f"a reply (was {result.awaiting_reply_before}); each one is an orphan a "
+            "later 'done' can resolve, completing the wrong task and rewarding work "
+            "that was already celebrated"
         )
     elif result.intent != "COMPLETE":
         assert result.awaiting_reply_after >= result.awaiting_reply_before, (

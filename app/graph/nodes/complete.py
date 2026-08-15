@@ -313,7 +313,24 @@ def _title_target(page_id: str, title: str, *, now: datetime) -> _CompletionTarg
     )
 
 
-async def _clear_recent_outbound(peer: str, signal_timestamp: int) -> None:
+async def _clear_recent_outbound(
+    peer: str, signal_timestamp: int, notion_page_id: str = ""
+) -> None:
+    """Resolve the reminder rows this completion answers.
+
+    Scoped by page, not by the single delivery the user replied to. A task can
+    have several reminders in flight — migration 0007 dropped the UNIQUE on
+    `reminder_outbox.notion_page_id` so deadline milestones could stack — and
+    each delivery writes its own `recent_outbound` row. Clearing only the row
+    matching `signal_timestamp` leaves the siblings live for their full 24h
+    window, where a later unrelated "done" resolves one of them: the wrong task
+    marked complete, and a reward celebrating work that was already finished
+    and already celebrated. `docs/reward-system.md` ties rewards to actual
+    completion, so that is a spec violation, not merely untidy state.
+
+    `signal_timestamp` stays in the predicate as a fallback so a target that
+    somehow carries no page id still resolves the row it came from.
+    """
     if not peer or not os.environ.get("DATABASE_URL"):
         return
 
@@ -325,9 +342,13 @@ async def _clear_recent_outbound(peer: str, signal_timestamp: int) -> None:
             UPDATE recent_outbound
                SET awaiting_reply = false
              WHERE peer = %s
-               AND signal_timestamp = %s
+               AND awaiting_reply = true
+               AND (
+                     signal_timestamp = %s
+                     OR (%s <> '' AND notion_page_id = %s)
+                   )
             """,
-            (peer, signal_timestamp),
+            (peer, signal_timestamp, notion_page_id, notion_page_id),
         )
         await conn.commit()
 
@@ -453,7 +474,7 @@ async def complete_node(state: State) -> dict[str, Any]:
 
         if target.source == "recent_outbound" and target.signal_timestamp is not None:
             try:
-                await _clear_recent_outbound(peer, target.signal_timestamp)
+                await _clear_recent_outbound(peer, target.signal_timestamp, page_id)
             except Exception:
                 log.warning(
                     "complete_node.recent_outbound_clear_failed",
