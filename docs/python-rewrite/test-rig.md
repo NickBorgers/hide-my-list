@@ -50,12 +50,17 @@ non-empty placeholder API key and the OpenAI-compatible `/v1` endpoint — rathe
 than repo secrets. The compose smoke is manually gated by `ENABLE_COMPOSE_SMOKE` —
 there's no scheduled trigger (it boots the full stack and is too slow for PR CI).
 
-**Why evals are not a PR check.** A `pull_request`-triggered job on the
-self-hosted runner would check out the PR branch and execute its code, on a
-machine reachable from the tailnet — arbitrary code execution from an
-unreviewed branch. The proxy is only reachable from that runner, so there is no
-GitHub-hosted alternative. The cost of that choice is real and worth naming:
-nightly finds a behavioral regression the morning after it merged.
+**Why evals are not a PR check.** Fork PRs are blocked repo-wide, so running
+PR-branch code on the `homelab` runner is acceptable — the same posture the E2E
+workflow, `review-fixer.yml`, `review-reviewer.yml`, and `codex.yml` all take.
+Evals remain nightly for two other reasons: cost (~$2–5 per run) and duration
+(10–20 min) make them too slow for per-PR CI, and behavioral regressions surface
+before merging if you run the suite locally on any tailnet-connected machine
+before pushing. E2E conversations run per-PR specifically because cross-turn
+state handoff regressions merge clean without leaving any trace in the mocked
+layers — nightly would report them the morning after they land in production.
+That is why the two workflows have different schedules despite sharing the same
+runner and proxy.
 
 ### Running evals before you push
 
@@ -434,6 +439,32 @@ These are the eleven contract clauses the test reviewer enforces (see
    - At least one `test_*.py`, or README note "test lives in ...".
 
 6. **Dropped tests** need explicit PR-body justification. Silent deletion of a failing test is always a blocker.
+
+7. **Changes to `scripts/run-required-checks.sh` that add or modify a pre-commit dispatch branch** must have:
+   - A structural test in `tests/unit/` asserting the new branch is wired: the function exists, is called from the dispatcher, and invokes the expected tools.
+   - Example: `test_precommit_python_gate.py` covers `run_pre_commit_python_checks`.
+
+8. **PRs that add a new production image dependency to `docker/compose.yaml`** must add:
+   - A structural lint in `tests/unit/` asserting the two-property invariant: (1) the image is pinned by immutable sha256 digest, not a mutable tag; and (2) a scheduled refresh workflow exists that targets the same image and validates the digest before writing. (Catches bug class 9 — production dependency pin staleness; see `tests/unit/test_signal_cli_pin.py` as the canonical template.)
+   - PRs that remove or weaken an existing production-dependency pin lint (e.g., deleting `test_signal_cli_pin.py` or removing the digest-validation assertion) are blockers under clause 6 unless the dependency itself is also removed.
+
+9. **New or modified eval fixtures in `tests/evals/fixtures/<node>/`** must conform to the eval-rig architecture:
+   - Fixtures for nodes that read tasks (`selection`, `rejection`, or any node whose body calls `query_pending`) must declare a `notion_tasks` pool. A fixture without `notion_tasks` for such a node scores whatever happens to be in the live Notion database, making results non-comparable across runs and models.
+   - The fixture runner serves task pools from a stubbed Notion client (`_install_notion_stub`). Any PR that changes the `_as_notion_page` translator or the Notion stub must update `tests/unit/test_eval_rig.py` to assert the new translation round-trips through the real node-side extractors.
+   - New eval-covered graph nodes must emit a terminal `<node>_node.error` event on exception. A node that swallows exceptions and returns a hand-written fallback will score that fallback as model output.
+   - `regex_*` and `json_schema` contracts score the RAW draft body; `judge` and `shame_safe` contracts score the DELIVERED body (token substituted from `notion_page_title`). Write rubrics against the delivered text; assert token invariants as `regex_require: "\\{task\\}"`.
+   - `prior_state.active_task` must use the runtime `ActiveTask` shape (`page_id`, `title`). Omit `selected_at` to let the runner inject a fresh timestamp; set it explicitly only to test the stale-task path.
+
+10. **Side-effecting calls wrapped in intentional exception-swallowing handlers** must have:
+    - A test that asserts the outbound call's kwargs shape directly — not just the fallback return value, which looks identical whether the call was valid or not.
+    - A test that validates each kwarg name against `inspect.signature(real_dependency)` so a parameter rejected or removed by a future SDK version fails loudly rather than silently falling back. (Catches bug class 10 — silent degradation behind intentional exception-swallowing; see `tests/unit/test_rewards.py` `TestImageGenerationCallContract` as the canonical template.)
+
+11. **PRs that add or modify E2E conversation scenarios, cross-turn invariants, or the conversation-layer harness** must:
+    - Enter scenarios through `SignalListener`, not `graph.ainvoke`, so `thread_id` derivation, the auth gate, and concurrent background tasks (read receipts, typing indicators) are under test.
+    - Assert side-effect shapes: which Notion page was written, whether `recent_outbound.awaiting_reply` cleared, what survived in the checkpoint, how many messages went out. Wording checks use `regex_require`/`regex_forbid`, not equality on model text.
+    - Cover any new cross-turn handoff — for example, a `recent_outbound` row written by `reminder_worker` several turns before the COMPLETE turn that resolves against it — with a full multi-turn scenario rather than a single-node call with a hand-built `State`.
+    - Never retry on `IntentMisrouteError`. Retrying hides the classifier drift this layer exists to detect. (Catches bug class 11 — cross-turn state handoff regressions.)
+    - Rely on the seven per-turn invariants in `tests/support/invariants.py`, which run automatically after every `conversation.say()` call.
 
 If this PR adds a new bug class or extends the layer architecture described in
 this document, update this document AND update
