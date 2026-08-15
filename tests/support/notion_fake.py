@@ -366,13 +366,17 @@ class FakeNotion:
         if self.discard_writes:
             return {}
         page = self._require_page(page_id, "update_property")
-        for prop, value in prop_json.items():
+        props = prop_json.get("properties", prop_json)
+        for prop, value in props.items():
             if prop in _SELECT_PROPS and isinstance(value, dict):
                 page[_select_flat_key(prop)] = value.get("select", {}).get("name")
             elif prop in _NUMBER_PROPS and isinstance(value, dict):
                 page[_number_flat_key(prop)] = value.get("number")
             elif prop in _CHECKBOX_PROPS and isinstance(value, dict):
                 page[_select_flat_key(prop)] = value.get("checkbox")
+        for prop_name, flat_key in _DATE_PROPS:
+            if prop_name in props and isinstance(props[prop_name], dict):
+                page[flat_key] = props[prop_name].get("date", {}).get("start")
         self._record("update_property", page_id, prop_json)
         return {"id": page_id}
 

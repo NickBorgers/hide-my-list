@@ -489,3 +489,36 @@ def test_notion_write_payload_is_copied_not_aliased() -> None:
     payload["Status"] = {"select": {"name": "Completed"}}
 
     assert fake.writes[-1].payload["Status"] == {"select": {"name": "Pending"}}
+
+
+@pytest.mark.asyncio
+async def test_update_property_wrapped_number_visible_in_later_read() -> None:
+    """Wrapped {properties: {Rejection Count: {number: N}}} must be visible in a later get_page."""
+    fake = FakeNotion()
+    page_id = fake.seed_task(title="Wrap test")
+    await fake.update_property(page_id, {"properties": {"Rejection Count": {"number": 3}}})
+    page = await fake.get_page(page_id)
+    props = page["properties"]
+    assert props["Rejection Count"]["number"] == 3
+
+
+@pytest.mark.asyncio
+async def test_update_property_wrapped_date_visible_in_later_read() -> None:
+    """Wrapped {properties: {Due At: {date: {start: iso}}}} must be visible in a later get_page."""
+    fake = FakeNotion()
+    page_id = fake.seed_task(title="Date wrap test")
+    iso = "2025-12-01T09:00:00+00:00"
+    await fake.update_property(page_id, {"properties": {"Due At": {"date": {"start": iso}}}})
+    page = await fake.get_page(page_id)
+    props = page["properties"]
+    assert props["Due At"]["date"]["start"] == iso
+
+
+@pytest.mark.asyncio
+async def test_update_property_record_preserves_original_request_body() -> None:
+    """_record must see the original prop_json wrapper, not the unwrapped props."""
+    fake = FakeNotion()
+    page_id = fake.seed_task(title="Record test")
+    body = {"properties": {"Rejection Count": {"number": 7}}}
+    await fake.update_property(page_id, body)
+    assert fake.writes[-1].payload == body

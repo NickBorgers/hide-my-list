@@ -85,7 +85,7 @@ Each bug class leaves a permanent test. Fix -> regression test ->
 |---|---|---|---|
 | 1 | psycopg3 UUID coercion | `tests/regressions/bug_0570_reminder_uuid_coercion/test_uuid_round_trip.py` | Insert via `reminders.enqueue`, dispatch, assert no `AttributeError`, `state='delivered'`, correct recipient kwarg |
 | 2 | LLM capability denial | `tests/unit/test_no_capability_denial.py` (structural) + `tests/evals/fixtures/chat/missed_reminder.yaml` exercised via `tests/evals/test_evals.py` | `regex_forbid` denial phrasing; judge score >= 0.7 for capability acknowledgment |
-| 3 | Image orphaned from delivery | `tests/integration/test_reward_image_delivery.py` (follow-up; tracked in `tests/regressions/bug_0563_reward_image_orphan/README.md`) | `mock.call_args.kwargs["attachment_path"]` is non-None AND file exists; not just `mock.called` |
+| 3 | Image orphaned from delivery | `tests/unit/test_send_node_attachment.py` | `attachment_paths=[path]` passed to `send_message`; not just `mock.called` |
 | 4 | Auth gate | `tests/unit/test_signal_listener_auth.py` | Unauthorized peer rejected; no state-table writes |
 | 5 | Deployment gaps | `tests/smoke/test_compose_round_trip.py` | Full compose stack boots; reminder_outbox table created when migrations run; env vars threaded |
 | 6 | Dead-code wiring | `tests/unit/test_reachability.py` (AST scan) | Every public top-level function in scanned dirs has >= 1 call site outside its definition |
