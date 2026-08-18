@@ -37,12 +37,16 @@ whatever the test says it returns regardless of what the prompt asked. Only a
 real model reading a real prompt could reject "the garden one", and only the
 chain below observed it.
 
-It also covers the option set the re-ask names: a positional answer ("the
-second one") resolving against the offered order, and an option that closed
-between the question and the answer being dropped rather than resurrected from
-the checkpoint. Offering constrained choices and then being unable to read a
-choice-shaped answer is a worse trade than not offering them, so the two
-belong to the same fix.
+It also covers the option set the ask names: a positional answer ("the second
+one") resolving against the offered order, an option that closed between the
+question and the answer being dropped rather than resurrected from the
+checkpoint, and — the constraint that makes the other two safe — options being
+named only when the message's own words reached them. A widened set is the
+whole open list ranked by near-zero scores, so its top three are the first
+three tasks. Naming those would present noise as a suggestion, and once an
+option can be answered by position, accepting the suggestion completes a task
+picked at random. Offering choices and offering them only with cause are the
+same fix.
 
 The chain itself lives in `tests/e2e/scenarios/test_complete_clarification.py`,
 which runs the real graph against the real checkpointer. That layer is the only

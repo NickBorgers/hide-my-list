@@ -316,14 +316,11 @@ async def test_a_reminder_lookup_failure_does_not_veto_the_named_task() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_an_unresolved_completion_records_that_it_asked() -> None:
-    """The first "which task did you mean?" must leave a trace in state."""
-    query_all = AsyncMock(return_value={"results": [
-        _notion_page("<page_A>", "Deal with the spare fridge"),
-        _notion_page("<page_B>", "Book the dentist appointment"),
-    ]})
-
+async def _unresolved_with(incoming: str, titles: list[tuple[str, str]]) -> dict[str, Any]:
+    """One COMPLETE turn where the model matches nothing, against `titles`."""
+    query_all = AsyncMock(return_value={
+        "results": [_notion_page(pid, title) for pid, title in titles]
+    })
     with (
         patch("app.tools.notion.update_status", new_callable=AsyncMock),
         patch("app.tools.notion.query_all", query_all),
@@ -339,39 +336,93 @@ async def test_an_unresolved_completion_records_that_it_asked() -> None:
             json.dumps({"matched_page_id": None, "confidence": 0.0})
         )),
     ):
-        result = await complete_module.complete_node(_state("knocked out that thing earlier"))
+        return await complete_module.complete_node(_state(incoming))
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_completion_records_that_it_asked() -> None:
+    """The first "which task did you mean?" must leave a trace in state."""
+    result = await _unresolved_with("knocked out that thing earlier", [
+        ("<page_A>", "Deal with the spare fridge"),
+        ("<page_B>", "Book the dentist appointment"),
+    ])
 
     pending = result["pending_clarification"]
     assert pending is not None
     assert pending["kind"] == "complete_target"
     assert pending["attempts"] == 1
-    assert pending["candidates"], "the re-ask needs options to name"
 
 
 @pytest.mark.asyncio
-async def test_the_second_ask_names_options_instead_of_repeating_itself() -> None:
-    """Three identical sends is what the user experienced. The re-ask differs.
+async def test_only_candidates_the_message_reached_become_offered_options() -> None:
+    """A widened set is the open list, not a shortlist — it must not be offered.
 
-    `design/adhd-priorities.md`: "If you must ask one question, offer 2-3
-    constrained choices, not open-ended."
+    Its top three are the first three tasks, ranked by scores that are all
+    zero. Naming them presents noise as a suggestion, and since a named option
+    can be answered by position, the user could accept one and complete a task
+    picked at random. The scored case is the opposite: those titles are on the
+    list because the message put them there.
     """
-    first = complete_module._clarify_completion_target("<test-peer>", attempts=0)
-    second = complete_module._clarify_completion_target(
-        "<test-peer>",
-        attempts=1,
-        candidates=(
-            complete_module.DedupCandidate("<page_A>", "Deal with the spare fridge", 0.1),
-            complete_module.DedupCandidate("<page_B>", "Book the dentist appointment", 0.0),
-        ),
+    widened = await _unresolved_with("knocked out that thing earlier", [
+        ("<page_A>", "Deal with the spare fridge"),
+        ("<page_B>", "Book the dentist appointment"),
+    ])
+    scored = await _unresolved_with("done with the fridge", [
+        ("<page_A>", "Deal with the fridge"),
+        ("<page_B>", "Book the dentist appointment"),
+    ])
+
+    assert widened["pending_clarification"]["candidates"] == [], (
+        "an option the user was never shown must not become a referent"
+    )
+    assert "which task" in widened["pending_outbound"][0]["body"].lower()
+
+    assert scored["pending_clarification"]["candidates"], (
+        "candidates the message actually reached are worth offering"
+    )
+    assert "Deal with the fridge" in scored["pending_outbound"][0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_the_second_ask_differs_from_the_first_either_way() -> None:
+    """Three identical sends is what the user experienced. Every ask differs.
+
+    With options to name, the ask names them (`design/adhd-priorities.md`:
+    "offer 2-3 constrained choices, not open-ended"). Without, it rephrases —
+    an open question repeated verbatim is the bug itself.
+    """
+    options = (
+        complete_module.DedupCandidate("<page_A>", "Deal with the spare fridge", 0.5),
+        complete_module.DedupCandidate("<page_B>", "Book the dentist appointment", 0.4),
     )
 
-    first_body = first["pending_outbound"][0]["body"]
-    second_body = second["pending_outbound"][0]["body"]
+    named_first = complete_module._clarify_completion_target(
+        "<test-peer>", attempts=0, candidates=options, offerable=True
+    )
+    named_second = complete_module._clarify_completion_target(
+        "<test-peer>", attempts=1, candidates=options, offerable=True
+    )
+    open_first = complete_module._clarify_completion_target(
+        "<test-peer>", attempts=0, candidates=options, offerable=False
+    )
+    open_second = complete_module._clarify_completion_target(
+        "<test-peer>", attempts=1, candidates=options, offerable=False
+    )
 
-    assert first_body != second_body
-    assert "Deal with the spare fridge" in second_body
-    assert "Book the dentist appointment" in second_body
-    assert second["pending_clarification"]["attempts"] == 2
+    def body(result: dict[str, Any]) -> str:
+        return str(result["pending_outbound"][0]["body"])
+
+    assert body(named_first) != body(named_second)
+    assert body(open_first) != body(open_second)
+
+    for result in (named_first, named_second):
+        assert "Deal with the spare fridge" in body(result)
+        assert "Book the dentist appointment" in body(result)
+    for result in (open_first, open_second):
+        assert "Deal with the spare fridge" not in body(result)
+        assert result["pending_clarification"]["candidates"] == []
+
+    assert named_second["pending_clarification"]["attempts"] == 2
 
 
 @pytest.mark.asyncio

@@ -566,20 +566,25 @@ def _format_options(titles: list[str]) -> str:
     return f"{', '.join(titles[:-1])}, or {titles[-1]}"
 
 
-def _clarification_body(attempts: int, candidates: tuple[DedupCandidate, ...]) -> str:
+def _clarification_body(
+    attempts: int, candidates: tuple[DedupCandidate, ...], *, offerable: bool
+) -> str:
     """Compose the question for this attempt.
 
-    When candidates are available the ask names them — recognition rather than
-    recall. With no candidates to name the question is open. The same template
-    is used on every attempt; a third ask is never sent.
+    When there are candidates worth naming the ask names them — recognition
+    rather than recall. Otherwise it stays open, and the second ask rephrases
+    rather than repeating, because a message repeated verbatim is the failure
+    this whole path exists to prevent.
     """
-    if not candidates:
-        return "I can mark that done. Which task did you mean?"
+    if candidates and offerable:
+        titles = [candidate.title for candidate in candidates[:_CLARIFICATION_OPTION_LIMIT]]
+        if attempts == 0:
+            return f"I can mark that done — was it {_format_options(titles)}?"
+        return f"Still not sure which one — was it {_format_options(titles)}?"
 
-    titles = [candidate.title for candidate in candidates[:_CLARIFICATION_OPTION_LIMIT]]
     if attempts == 0:
-        return f"I can mark that done — was it {_format_options(titles)}?"
-    return f"Still not sure which one — was it {_format_options(titles)}?"
+        return "I can mark that done. Which task did you mean?"
+    return "Still not placing it — what's the task called?"
 
 
 def _clarify_completion_target(
@@ -587,6 +592,7 @@ def _clarify_completion_target(
     *,
     attempts: int = 0,
     candidates: tuple[DedupCandidate, ...] = (),
+    offerable: bool = False,
 ) -> dict[str, Any]:
     """Ask which task was meant, and remember having asked.
 
@@ -594,6 +600,14 @@ def _clarify_completion_target(
     current exchange. Past _MAX_CLARIFICATION_ATTEMPTS the agent stops asking
     and leaves the tasks open — an unanswered question re-sent a third time
     costs the user attention and returns nothing.
+
+    `offerable` says whether the candidates are worth presenting as choices —
+    true only when the message's own words put them there. A widened candidate
+    set is the whole open list ranked by scores that are all effectively zero,
+    so its top three are not a shortlist, they are the first three tasks. Naming
+    them would present noise as a suggestion, and because a named option can be
+    answered by position, the user could pick one and complete a task chosen at
+    random. Choices are only a kindness when there is a reason behind them.
     """
     if attempts >= _MAX_CLARIFICATION_ATTEMPTS:
         log.info(
@@ -618,10 +632,12 @@ def _clarify_completion_target(
         }
 
     # Titles are the user's private words: store them in checkpointed state so
-    # the re-ask can name them, and log counts only.
+    # the re-ask can name them, and log counts only. Only offerable candidates
+    # are stored — an option the user was never shown must not become the
+    # referent of "the first one" on the next turn.
     stored: list[ClarificationCandidate] = [
         {"page_id": candidate.page_id, "title": candidate.title}
-        for candidate in candidates[:_CLARIFICATION_OPTION_LIMIT]
+        for candidate in (candidates[:_CLARIFICATION_OPTION_LIMIT] if offerable else ())
     ]
     clarification: PendingClarification = {
         "kind": "complete_target",
@@ -631,7 +647,7 @@ def _clarify_completion_target(
     }
     no_task_draft: OutboundDraft = {
         "recipient": peer,
-        "body": _clarification_body(attempts, candidates),
+        "body": _clarification_body(attempts, candidates, offerable=offerable),
         "notion_page_id": None,
     }
     log.info(
@@ -728,7 +744,10 @@ async def complete_node(state: State) -> dict[str, Any]:
             and title_match.target is None
         ):
             return _clarify_completion_target(
-                peer, attempts=attempts, candidates=title_match.candidates
+                peer,
+                attempts=attempts,
+                candidates=title_match.candidates,
+                offerable=not title_match.widened,
             )
 
         # Ids and counts only — the residue tokens and task titles are the
@@ -750,7 +769,10 @@ async def complete_node(state: State) -> dict[str, Any]:
 
         if not target:
             return _clarify_completion_target(
-                peer, attempts=attempts, candidates=title_match.candidates
+                peer,
+                attempts=attempts,
+                candidates=title_match.candidates,
+                offerable=not title_match.widened,
             )
 
         page_id = target.page_id

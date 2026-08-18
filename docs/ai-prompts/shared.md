@@ -197,14 +197,23 @@ runs on every turn.
 | Time-to-live from `asked_at` | 30 minutes |
 | Intents treated as an answer | CHAT, COMPLETE (steered to COMPLETE) |
 | Intents that drop the question | every other intent |
-| Options named when candidates exist | up to 3 |
+| Options named when the message reached candidates | up to 3 |
 | Asks before the agent stops | 2 |
 
 An expired timestamp, a malformed record, or a classified intent outside the
-answer set clears the key rather than steering. When candidates exist the ask
-names them (up to 3); with no candidates the question is open. Past the ask
-limit the node sends a closing message, leaves the tasks open, and clears the
-key.
+answer set clears the key rather than steering. Past the ask limit the node
+sends a closing message, leaves the tasks open, and clears the key.
+
+Options are named only when the message's own words put those candidates on
+the list. A widened whole-list scan is ranked by scores that are all
+effectively zero, so its top three are the first three open tasks rather than
+a shortlist; naming them would present noise as a suggestion, and because a
+named option can be answered by position, the user could accept one and
+complete a task chosen at random. In that case the question stays open and
+nothing is stored as an option — an option the user was never shown must never
+become the referent of "the first one". Each ask is worded differently from the
+one before it either way, because a question repeated verbatim is the failure
+this path exists to prevent.
 
 `complete_node` reads the same record for two things. The options it named lead
 the candidate list on the answering turn, in the order they were named, so a

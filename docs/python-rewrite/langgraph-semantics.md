@@ -133,9 +133,13 @@ from three sources in priority order:
    the candidate titles it can offer as options). `classify_intent` owns that key's lifecycle:
    while it is live and inside its 30-minute TTL, a CHAT- or COMPLETE-classified message routes
    to `complete_node` as the answer; any other intent, an expired timestamp, or malformed state
-   clears it. Each ask names available candidates (up to 3) when they exist, falling back to an
-   open question when none are available; past `_MAX_CLARIFICATION_ATTEMPTS` the node stops
-   asking and clears the key.
+   clears it. An ask names up to 3 candidates only when they came from the scored shortlist —
+   `_clarify_completion_target(offerable=...)` is passed `not title_match.widened`, because a
+   widened set is the whole open list ranked by near-zero scores and its top three are not a
+   shortlist. Non-offerable asks stay open and store no options, so a page the user never saw
+   cannot become the referent of a positional answer. Either way the second ask is worded
+   differently from the first; past `_MAX_CLARIFICATION_ATTEMPTS` the node stops asking and
+   clears the key.
 
    `complete_node` also reads the stored options back. They are re-read from the current open
    list (dropping any that closed in the meantime), placed at the head of the candidate list in

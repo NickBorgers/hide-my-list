@@ -234,18 +234,23 @@ sources, in this order:
    asked for, and an unanswered question expires rather than binding a much
    later reply.
 
-   Any unresolved turn names available candidates (up to 3) when they exist,
-   because recognizing a task costs less than recalling one. With no candidates
-   to name the question is open. After that the agent stops asking and leaves the tasks open —
-   a question that has not landed twice does not land on the third try, and
-   asking again spends attention the user came here to conserve.
+   An unresolved turn names up to three candidates when the user's own words
+   reached them, because recognizing a task costs less than recalling one. When
+   nothing on the list matched those words, the question stays open instead:
+   the ranked whole list is not a shortlist, and offering its first three
+   entries would dress a guess up as a suggestion. Each ask is worded
+   differently from the last either way. After the second the agent stops
+   asking and leaves the tasks open — a question that has not landed twice does
+   not land on the third try, and asking again spends attention the user came
+   here to conserve.
 
    Options that were named can be answered by position. "The first one" and
    "the second" resolve against the order the options were offered in, so the
    short answer the question invites is the answer it accepts. Naming choices
    and then requiring the full title typed back would spend more of the user's
-   working memory than asking nothing at all. An option that is no longer open
-   by the time the answer arrives is dropped rather than resolved.
+   working memory than asking nothing at all. Only options the user was
+   actually shown can be answered this way, and one that is no longer open by
+   the time the answer arrives is dropped rather than resolved.
 
    The answer is judged as an answer. A standalone completion has to assert
    that a task is finished — that rule is what keeps "done, now I need to call

@@ -122,17 +122,21 @@ async def test_a_positional_answer_resolves_the_option_it_points_at(
     one. The assertion reads the offered order out of the checkpoint rather
     than assuming it, because ranking decides which task is named first.
     """
-    first = conversation.notion.seed_task(title="Water the garden", work_type="Physical")
-    second = conversation.notion.seed_task(title="Sweep the porch", work_type="Physical")
-    conversation.offered.update({first, second})
+    garden = conversation.notion.seed_task(title="Water the garden", work_type="Physical")
+    lawn = conversation.notion.seed_task(title="Water the lawn", work_type="Physical")
+    conversation.offered.update({garden, lawn})
 
-    await conversation.say(
-        "yeah did that",
-        expect=Expect(notion_untouched=[first, second], sent_count=1),
-    )
+    # Genuinely ambiguous: "the water one" reaches both titles and separates
+    # neither, which is exactly the case options exist for. Options are only
+    # named when the message actually put those titles on the list — a widened
+    # whole-list scan is not a shortlist and is never offered.
     named = await conversation.say(
-        "the other thing",
-        expect=Expect(notion_untouched=[first, second], sent_count=1),
+        "done with the water one",
+        expect=Expect(
+            intent="COMPLETE",
+            notion_untouched=[garden, lawn],
+            sent_count=1,
+        ),
     )
 
     options = (named.state.get("pending_clarification") or {}).get("candidates") or []
@@ -142,7 +146,7 @@ async def test_a_positional_answer_resolves_the_option_it_points_at(
     await conversation.say("the first one", expect=Expect(sent_count=1))
 
     assert conversation.notion.status_of(expected) == "Completed"
-    other = second if expected == first else first
+    other = lawn if expected == garden else garden
     assert conversation.notion.status_of(other) == "Pending"
 
 
