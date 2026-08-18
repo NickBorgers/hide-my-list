@@ -437,6 +437,68 @@ async def test_the_attempt_count_carries_across_turns_and_terminates() -> None:
     assert "which task" not in bodies[2].lower()
 
 
+@pytest.mark.asyncio
+async def test_an_answer_is_judged_as_an_answer_not_as_a_claim() -> None:
+    """"the garden one" asserts nothing, and it is still a valid answer.
+
+    Routing the reply back to complete_node accomplishes nothing if the
+    matching prompt then judges it by the standalone rule — "match only when
+    the message asserts that candidate is done". A bare noun phrase never
+    asserts that, so the model rejects it every time, and the agent asks again.
+    The completion claim was made on the previous turn; this message only has
+    to identify which task it was about.
+    """
+    query_all = AsyncMock(return_value={"results": [_notion_page("<page_A>", "Water the garden")]})
+    model = _model(json.dumps({"matched_page_id": "<page_A>", "confidence": 0.95}))
+
+    with (
+        patch("app.tools.notion.update_status", new_callable=AsyncMock),
+        patch("app.tools.notion.query_all", query_all),
+        patch(
+            "app.tools.rewards.maybe_reward",
+            new_callable=AsyncMock,
+            return_value={"text": "Nice work!", "attachment_path": None},
+        ),
+        patch.object(
+            complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)
+        ),
+        patch("app.models.llm", return_value=model),
+    ):
+        await complete_module.complete_node(
+            _state("the garden one", pending_clarification=_clarification(attempts=1))
+        )
+
+    prompt = str(model.ainvoke.await_args.args[0][0].content)
+    assert "was asked which one they meant" in prompt
+    assert "does not need to say the task is done" in prompt
+    assert "Match only when the message asserts that candidate is done" not in prompt
+
+
+def test_a_standalone_completion_keeps_the_stricter_framing() -> None:
+    """Answer mode must not leak into a first "done with the dishes".
+
+    Without a question in front of it, the message is the only thing claiming
+    anything is finished, so the assertion rule is what stops "now I need to
+    call mom" from completing "Call mom".
+    """
+    candidates = [complete_module.DedupCandidate("<page_A>", "Call mom", 0.9)]
+
+    standalone = complete_module._build_completion_match_prompt(
+        "done, now I need to call mom", candidates
+    )
+    answering = complete_module._build_completion_match_prompt(
+        "the mom one", candidates, answering_clarification=True
+    )
+
+    assert "asserts that candidate is done" in standalone
+    assert "was asked which one they meant" not in standalone
+    assert "asserts that candidate is done" not in answering
+
+    # Both framings keep the guard that makes the 0.90 threshold meaningful.
+    for prompt in (standalone, answering):
+        assert "If uncertain, return no match." in prompt
+
+
 # ---------------------------------------------------------------------------
 # Routing: an answer to the question reaches the node that asked it
 # ---------------------------------------------------------------------------

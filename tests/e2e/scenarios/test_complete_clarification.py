@@ -33,19 +33,25 @@ async def test_a_paraphrase_resolves_without_quoting_the_title(
 ) -> None:
     """The production message shape: the user's words, not the task's words.
 
-    "the fridge in the garage" against "Deal with the spare refrigerator in the
-    basement" shares no token the shortlist scores — the words a person reaches
-    for describing their own task are rarely the words they filed it under.
+    "old fridge" against "Deal with the spare refrigerator" shares no token the
+    shortlist scores — the words a person reaches for describing their own task
+    are rarely the words they filed it under.
+
+    What this asserts is that zero word overlap no longer ends the turn, and
+    the pair is deliberately one synonym wide so it stays a test of that rather
+    than of how far the cheap tier can reach. Widening guarantees the model is
+    asked; it does not guarantee the model can bridge any distance, and a
+    scenario that demanded a harder leap would be measuring the model.
     """
     fridge = conversation.notion.seed_task(
-        title="Deal with the spare refrigerator in the basement",
+        title="Deal with the spare refrigerator",
         work_type="Physical",
     )
     decoy = conversation.notion.seed_task(title="Book the dentist", work_type="Independent")
     conversation.offered.add(fridge)
 
     await conversation.say(
-        "finally got that garage fridge sorted out",
+        "got rid of that old fridge finally",
         expect=Expect(
             intent="COMPLETE",
             notion_status={fridge: "Completed"},
@@ -65,8 +71,14 @@ async def test_the_answer_to_the_question_lands_on_the_task(
 
     The answer to "which task did you mean?" is a bare noun phrase — not a
     completion sentence, so the classifier has no reason to call it COMPLETE on
-    its own. Routing it back to the node that asked is the whole point of
+    its own. Routing it back to the node that asked is half the point of
     remembering the question.
+
+    The other half is that the node judges it as an answer. The standalone
+    matching rule rejects anything that does not assert a task is finished, and
+    "the garden one" never will: the assertion was made on turn 1. Route
+    without reframing and the reply comes back rejected, which looks from the
+    outside exactly like the bug this scenario exists to catch.
     """
     garden = conversation.notion.seed_task(title="Water the garden", work_type="Physical")
     conversation.offered.add(garden)

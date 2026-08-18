@@ -250,20 +250,54 @@ def _task_reference_tokens(incoming: str) -> set[str]:
     return normalize_title_tokens(incoming) - _COMPLETION_WORDS
 
 
-def _build_completion_match_prompt(incoming: str, candidates: list[DedupCandidate]) -> str:
+def _build_completion_match_prompt(
+    incoming: str,
+    candidates: list[DedupCandidate],
+    *,
+    answering_clarification: bool = False,
+) -> str:
+    """Ask the model which candidate the message resolves to.
+
+    Two framings, because the message means different things in the two cases.
+    A standalone completion has to carry the claim itself, so the model is told
+    to reject anything that does not assert a task is finished. An answer to
+    "which task did you mean?" carries no such claim and never will: the user
+    already said they finished something on the previous turn and was asked
+    only *which*. Judging "the garden one" against the standalone rule rejects
+    it every time — correctly, for a rule that does not apply to it.
+    """
     candidate_payload = [
         {"id": candidate.page_id, "title": candidate.title}
         for candidate in candidates
     ]
+    if answering_clarification:
+        instructions = (
+            "The user reported finishing a task and was asked which one they "
+            "meant. This message is their answer.\n\n"
+            "Decide which candidate task the answer identifies. The answer does "
+            "not need to say the task is done — that was already said on the "
+            "previous turn. It only has to point at a task, by name, by "
+            "paraphrase, or by some detail that distinguishes it.\n\n"
+            "Match only when the answer points at exactly one candidate. If it "
+            "identifies none of them, points at several equally well, or "
+            "changes the subject, return no match. The cost of a false match is "
+            "high: it marks a task the user has not finished as completed. If "
+            "uncertain, return no match."
+        )
+    else:
+        instructions = (
+            "The user sent a message reporting that they finished something. "
+            "Decide which candidate task, if any, the message says is ALREADY "
+            "FINISHED.\n\n"
+            "Match only when the message asserts that candidate is done. A "
+            "message that mentions a task the user still intends to do, is "
+            "asking about, or is about to start is NOT a match — return no "
+            "match for those even when the wording overlaps a candidate title. "
+            "The cost of a false match is high: it marks a task the user has "
+            "not finished as completed. If uncertain, return no match."
+        )
     return (
-        "The user sent a message reporting that they finished something. Decide "
-        "which candidate task, if any, the message says is ALREADY FINISHED.\n\n"
-        "Match only when the message asserts that candidate is done. A message "
-        "that mentions a task the user still intends to do, is asking about, or "
-        "is about to start is NOT a match — return no match for those even when "
-        "the wording overlaps a candidate title. The cost of a false match is "
-        "high: it marks a task the user has not finished as completed. If "
-        "uncertain, return no match.\n\n"
+        f"{instructions}\n\n"
         f"User message: {incoming!r}\n"
         f"Candidates: {json.dumps(candidate_payload, ensure_ascii=True)}\n\n"
         "Return JSON only in this shape:\n"
@@ -271,7 +305,13 @@ def _build_completion_match_prompt(incoming: str, candidates: list[DedupCandidat
     )
 
 
-async def _resolve_title_match(incoming: str, residue: set[str], *, now: datetime) -> _TitleMatch:
+async def _resolve_title_match(
+    incoming: str,
+    residue: set[str],
+    *,
+    now: datetime,
+    answering_clarification: bool = False,
+) -> _TitleMatch:
     """Resolve a task named in the message against open Notion tasks.
 
     Fail-soft by design: every failure returns no target so the caller falls
@@ -350,7 +390,11 @@ async def _resolve_title_match(incoming: str, residue: set[str], *, now: datetim
 
         model = llm("cheap", caller="complete_title_match")
         response = await model.ainvoke([
-            SystemMessage(content=_build_completion_match_prompt(incoming, candidates)),
+            SystemMessage(content=_build_completion_match_prompt(
+                incoming,
+                candidates,
+                answering_clarification=answering_clarification,
+            )),
             HumanMessage(content="Return only the JSON object."),
         ])
         parsed = parse_match_response(str(response.content), candidates)
@@ -561,7 +605,12 @@ async def complete_node(state: State) -> dict[str, Any]:
         # Attempts already spent on this question. Absent for a first "done",
         # present when this turn is the answer to a clarification classify_intent
         # kept alive.
+        # classify_intent only carries a clarification forward while it is live,
+        # so its presence means this turn is the answer to one. That changes how
+        # the message reads: the completion claim was made on the previous turn
+        # and this message only says which task it was about.
         pending = state.get("pending_clarification")
+        answering = isinstance(pending, dict) and bool(pending)
         raw_attempts = pending.get("attempts", 0) if isinstance(pending, dict) else 0
         attempts = raw_attempts if isinstance(raw_attempts, int) and raw_attempts >= 0 else 0
 
@@ -582,7 +631,10 @@ async def complete_node(state: State) -> dict[str, Any]:
         residue = _task_reference_tokens(state.get("incoming") or "")
         if residue:
             title_match = await _resolve_title_match(
-                state.get("incoming") or "", residue, now=now
+                state.get("incoming") or "",
+                residue,
+                now=now,
+                answering_clarification=answering,
             )
         else:
             title_match = _TitleMatch(target=None, candidate_count=0, confidence=None)
@@ -627,6 +679,7 @@ async def complete_node(state: State) -> dict[str, Any]:
             match_confidence=title_match.confidence,
             residue_token_count=len(residue),
             clarification_attempts=attempts,
+            answering_clarification=answering,
         )
 
         if not target:

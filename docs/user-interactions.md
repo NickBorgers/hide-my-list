@@ -240,9 +240,17 @@ sources, in this order:
    a question that has not landed twice does not land on the third try, and
    asking again spends attention the user came here to conserve.
 
-   Holding the question steers which handler reads the next message; it grants
-   that handler nothing. A completion still requires a confident match against
-   the open-task list before any page is written.
+   The answer is judged as an answer. A standalone completion has to assert
+   that a task is finished — that rule is what keeps "done, now I need to call
+   mom" from completing "Call mom". A reply to a clarification asserts nothing
+   and never will: the completion was claimed on the previous turn, and this
+   message only says which task it was about. So the match is made on which
+   task the answer identifies, not on whether it repeats the claim.
+
+   Holding the question steers which handler reads the next message and how
+   that message is read; it grants that handler nothing. A completion still
+   requires a confident match against the open-task list before any page is
+   written.
 
 A task named in the message outranks both context sources, including an active
 task pointing somewhere else — the user naming a task is a stronger signal than

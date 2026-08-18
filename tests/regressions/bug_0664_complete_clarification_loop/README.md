@@ -10,20 +10,32 @@ exists to adjudicate the candidate list never saw one. The reply then cleared
 `conversation_state` and `active_task` and recorded nothing about having asked,
 so each turn re-entered cold and failed the same way.
 
-Two causes, one symptom. Token overlap was acting as a veto rather than a
+Three causes, one symptom. Token overlap was acting as a veto rather than a
 ranking — a message that describes a task instead of quoting its title scores
-zero, and zero was treated as "no candidates" instead of "rank them all". And a
+zero, and zero was treated as "no candidates" instead of "rank them all". A
 question the agent asked left no trace in state, so nothing could tell the
-second turn from the first.
+second turn from the first. And once the answer was routed back, the matching
+prompt still judged it by the standalone rule — "match only when the message
+asserts that candidate is done" — which a bare noun phrase like "the garden
+one" can never satisfy, because the assertion was made on the turn before.
+Routing without reframing produced the same loop by a longer path.
 
 ## Coverage
 
-`test_complete_clarification_loop.py` covers both halves at the node and routing
+`test_complete_clarification_loop.py` covers all three at the node and routing
 layer: a zero-overlap paraphrase reaching the model, the write bar holding at
 0.90 through the widened path, the #655 rejection guard staying scoped to
 candidates the message actually overlaps, the attempt count surviving across
-turns and terminating, and a CHAT-shaped answer routing back to the node that
-asked while an expired, malformed, or moved-on-from clarification does not.
+turns and terminating, a CHAT-shaped answer routing back to the node that asked
+while an expired, malformed, or moved-on-from clarification does not, and the
+two prompt framings staying separate — answer mode must not leak into a
+standalone completion, where the assertion rule is the guard.
+
+The third cause is the one that argues for this layer's limits. Every
+node-level test passed while it was live, because a mocked model returns
+whatever the test says it returns regardless of what the prompt asked. Only a
+real model reading a real prompt could reject "the garden one", and only the
+chain below observed it.
 
 The chain itself lives in `tests/e2e/scenarios/test_complete_clarification.py`,
 which runs the real graph against the real checkpointer. That layer is the only
