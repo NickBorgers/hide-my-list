@@ -569,16 +569,16 @@ def _format_options(titles: list[str]) -> str:
 def _clarification_body(attempts: int, candidates: tuple[DedupCandidate, ...]) -> str:
     """Compose the question for this attempt.
 
-    The first ask is open. A second ask that repeats it verbatim is what the
-    production failure looked like from the user's side, so the re-ask names
-    the best candidates instead — recognition rather than recall. With no
-    candidates to name there is nothing better to offer, so the open question
-    stands.
+    When candidates are available the ask names them — recognition rather than
+    recall. With no candidates to name the question is open. The same template
+    is used on every attempt; a third ask is never sent.
     """
-    if attempts == 0 or not candidates:
+    if not candidates:
         return "I can mark that done. Which task did you mean?"
 
     titles = [candidate.title for candidate in candidates[:_CLARIFICATION_OPTION_LIMIT]]
+    if attempts == 0:
+        return f"I can mark that done — was it {_format_options(titles)}?"
     return f"Still not sure which one — was it {_format_options(titles)}?"
 
 
@@ -638,7 +638,7 @@ def _clarify_completion_target(
         "complete_node.clarification_asked",
         has_peer=bool(peer),
         attempts=attempts + 1,
-        named_option_count=len(stored) if attempts > 0 else 0,
+        named_option_count=len(stored),
     )
     return {
         "pending_outbound": [no_task_draft],

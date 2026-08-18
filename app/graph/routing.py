@@ -31,6 +31,10 @@ log = structlog.get_logger(__name__)
 # user has stopped thinking about.
 _CLARIFICATION_TTL = timedelta(minutes=30)
 
+# Mirrors complete._MAX_CLARIFICATION_ATTEMPTS. A stored record whose attempts
+# field is outside [1, cap] is treated as malformed rather than trusted to steer.
+_MAX_CLARIFICATION_ATTEMPTS = 2
+
 # Intents that can plausibly BE the answer to "which task did you finish?".
 # Anything else means the user moved on, and the clarification is dropped rather
 # than overriding what they actually asked for.
@@ -95,6 +99,22 @@ def _live_clarification(state: State) -> PendingClarification | None:
 
     if datetime.now(UTC) - asked_at.astimezone(UTC) > _CLARIFICATION_TTL:
         return None
+
+    raw_attempts = pending.get("attempts")
+    if not isinstance(raw_attempts, int) or not (1 <= raw_attempts <= _MAX_CLARIFICATION_ATTEMPTS):
+        return None
+
+    raw_candidates = pending.get("candidates")
+    if not isinstance(raw_candidates, list):
+        return None
+    for c in raw_candidates:
+        if not (
+            isinstance(c, dict)
+            and isinstance(c.get("page_id"), str)
+            and isinstance(c.get("title"), str)
+        ):
+            return None
+
     return pending
 
 

@@ -197,13 +197,14 @@ runs on every turn.
 | Time-to-live from `asked_at` | 30 minutes |
 | Intents treated as an answer | CHAT, COMPLETE (steered to COMPLETE) |
 | Intents that drop the question | every other intent |
-| Options named on the second ask | 2-3 |
+| Options named when candidates exist | up to 3 |
 | Asks before the agent stops | 2 |
 
 An expired timestamp, a malformed record, or a classified intent outside the
-answer set clears the key rather than steering. The first ask is open ("which
-task did you mean?"); the second names its options; past the ask limit the node
-sends a closing message, leaves the tasks open, and clears the key.
+answer set clears the key rather than steering. When candidates exist the ask
+names them (up to 3); with no candidates the question is open. Past the ask
+limit the node sends a closing message, leaves the tasks open, and clears the
+key.
 
 `complete_node` reads the same record for two things. The options it named lead
 the candidate list on the answering turn, in the order they were named, so a

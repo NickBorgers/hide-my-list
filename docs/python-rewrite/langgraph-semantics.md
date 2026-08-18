@@ -133,8 +133,9 @@ from three sources in priority order:
    the candidate titles it can offer as options). `classify_intent` owns that key's lifecycle:
    while it is live and inside its 30-minute TTL, a CHAT- or COMPLETE-classified message routes
    to `complete_node` as the answer; any other intent, an expired timestamp, or malformed state
-   clears it. The second unresolved turn names two or three candidates instead of repeating the
-   open question; past `_MAX_CLARIFICATION_ATTEMPTS` the node stops asking and clears the key.
+   clears it. Each ask names available candidates (up to 3) when they exist, falling back to an
+   open question when none are available; past `_MAX_CLARIFICATION_ATTEMPTS` the node stops
+   asking and clears the key.
 
    `complete_node` also reads the stored options back. They are re-read from the current open
    list (dropping any that closed in the meantime), placed at the head of the candidate list in

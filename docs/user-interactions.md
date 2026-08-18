@@ -234,9 +234,9 @@ sources, in this order:
    asked for, and an unanswered question expires rather than binding a much
    later reply.
 
-   A second unresolved turn names two or three specific tasks instead of
-   repeating the open question, because recognizing a task costs less than
-   recalling one. After that the agent stops asking and leaves the tasks open —
+   Any unresolved turn names available candidates (up to 3) when they exist,
+   because recognizing a task costs less than recalling one. With no candidates
+   to name the question is open. After that the agent stops asking and leaves the tasks open —
    a question that has not landed twice does not land on the third try, and
    asking again spends attention the user came here to conserve.
 
@@ -304,9 +304,13 @@ sequenceDiagram
         AI->>AI: Resolve from reminder context or active task
     end
 
-    AI->>N: Update task status → completed
-    AI->>N: Set completedAt timestamp
-    N-->>AI: Success
+    alt Named-task or active-task completion
+        AI->>N: Update task status → completed
+        AI->>N: Set completedAt timestamp
+        N-->>AI: Success
+    else Reminder-context completion
+        Note over AI: Notion write skipped — reminder page already completed at delivery
+    end
 
     AI->>R: Trigger reward evaluation
     R->>R: Calculate intensity score
