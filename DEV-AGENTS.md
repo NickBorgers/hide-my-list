@@ -48,9 +48,9 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/tools/ops_alerts.py` — Ops alert enqueue + drain
 - `app/tools/time_context.py` — Timezone helper
 - `app/tools/db.py` — Postgres connection + migration runner
-- `app/graph/state.py` — LangGraph State TypedDict
+- `app/graph/state.py` — LangGraph State TypedDict; `pending_clarification` is absent on checkpoints written before it existed, so readers use `.get()`
 - `app/graph/graph.py` — LangGraph graph definition
-- `app/graph/routing.py` — Intent classification + conditional edges
+- `app/graph/routing.py` — Intent classification + conditional edges; owns the `pending_clarification` lifecycle, since it is the one node that runs every turn. A live clarification steers a CHAT- or COMPLETE-classified message to `complete_node` as the answer; any other intent, an expired timestamp, or malformed state drops it
 - `app/graph/nodes/intake.py` — ADD_TASK intent node
 - `app/graph/nodes/selection.py` — GET_TASK intent node
 - `app/graph/nodes/chat.py` — CHAT intent node
@@ -60,7 +60,7 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/graph/nodes/check_in.py` — CHECK_IN intent node
 - `app/graph/nodes/complete.py` — COMPLETE intent node
 - `app/graph/nodes/send.py` — Terminal send node; enforces the task-naming invariant on every draft carrying `notion_page_title`
-- `app/graph/nodes/_task_match.py` — Shared open-task extraction, token shortlist, and model-response parsing helper used by ADD_TASK (duplicate detection) and COMPLETE (title-match resolution)
+- `app/graph/nodes/_task_match.py` — Shared open-task extraction, token shortlist, and model-response parsing helper used by ADD_TASK (duplicate detection) and COMPLETE (title-match resolution). The score ranks candidates for the model; it never decides on its own that the model sees nothing — COMPLETE re-runs it unfiltered over the whole open list when nothing clears the threshold
 - `app/graph/nodes/_task_token.py` — Shared `{task}` token substitution; prompts write the literal token and the application fills in the exact stored title
 - `app/scheduler/scheduler.py` — APScheduler v3 wiring with PostgresJobStore
 - `app/scheduler/jobs.py` — Declarative SCHEDULED_JOBS list + reconcile_jobstore; jobs: `reminder_dispatcher`, `notion_health`, `ops_alerts_drain`, `state_audit`, `check_in_dispatcher`, `weekly_recap`, `reminder_scheduler`, `signal_ingress_silence`, `theme_evolution`

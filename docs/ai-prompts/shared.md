@@ -170,6 +170,13 @@ delivery already completes the reminder page, and marks every live
 the node asks which task the user means instead of completing a checkpointed
 task by default.
 
+That question is recorded in `state["pending_clarification"]` with the options
+it offered and the number of times it has been asked. While it is live and
+unexpired, a message classified CHAT or COMPLETE routes to `complete_node` as
+the answer; any other intent drops it. Routing an answer back to the node that
+asked does not relax that node's confidence threshold — the message still has
+to match an open task before Notion is written.
+
 Other shorthand follow-up paths thread matched context as follows:
 
 - ADD_TASK (reschedule): matched `recent_outbound.title` seeds the new reminder title in `docs/ai-prompts/intake.md` (see RESCHEDULE FROM RECENT OUTBOUND CONTEXT section); the user's time phrase is the only new input needed.

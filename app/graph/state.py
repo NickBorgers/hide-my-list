@@ -63,6 +63,31 @@ class OutboundDraft(TypedDict, total=True):
     notion_page_title: NotRequired[str]
 
 
+class ClarificationCandidate(TypedDict):
+    """One task the agent offered, or could have offered, as a clarification answer."""
+    page_id: str
+    title: str
+
+
+class PendingClarification(TypedDict, total=False):
+    """A question the agent asked and is still waiting on an answer to.
+
+    Without this, a clarifying question leaves no trace: the next turn re-enters
+    the same node cold, re-runs the same resolution that already failed, and
+    re-sends the same question. `attempts` bounds that loop and `candidates`
+    lets the re-ask name concrete options instead of repeating an open question
+    (`design/adhd-priorities.md`: offer 2-3 constrained choices).
+
+    `asked_at` is an ISO-8601 UTC timestamp; a stale clarification expires
+    rather than binding a much later "yeah" to a question the user has
+    forgotten asking.
+    """
+    kind: Literal["complete_target"]
+    asked_at: str
+    attempts: int
+    candidates: list[ClarificationCandidate]
+
+
 class UserPrefs(TypedDict, total=False):
     """User personalization preferences, ported from state.json.user_preferences."""
     timezone: str
@@ -84,6 +109,11 @@ class State(TypedDict):
     available_minutes: int | None
     conversation_state: ConversationState
     pending_outbound: list[OutboundDraft]  # drained by terminal send node
+
+    # Absent on every checkpoint written before this key existed, so readers use
+    # .get() and treat missing as "nothing outstanding". Lifecycle is owned by
+    # classify_intent, which is the one node that runs on every turn.
+    pending_clarification: NotRequired[PendingClarification | None]
 
     # Typing for extra keys accepted by LangGraph but not declared above
     __pydantic_extra__: Any

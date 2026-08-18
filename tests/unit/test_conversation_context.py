@@ -111,7 +111,9 @@ class TestClassifyIntentUsesHistory:
         with patch("app.models.llm", new=_fake_llm):
             result = await routing.classify_intent(state)
 
-        assert result == {"intent": "ADD_TASK"}
+        # classify_intent also writes pending_clarification on every turn; this
+        # test is about the prompt, so assert the intent rather than the whole delta.
+        assert result["intent"] == "ADD_TASK"
         msgs = captured["msgs"]
         # Second message is the HumanMessage carrying the prompt body.
         human_content = msgs[1].content

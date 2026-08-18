@@ -10,6 +10,12 @@ is the only source the user can steer — the other two are inferences from
 context that goes stale, and when they both do, nothing else can resolve
 "finished the dishes" to a page.
 
+When none of the three resolves, the node asks — and records the question in
+`pending_clarification` so the reply that answers it comes back here instead of
+re-entering cold and re-asking. A failure in any one source narrows the answer,
+never the question: the lookups are independent, so a dead Postgres or an empty
+shortlist must not stop the others from running.
+
 Reward integration implemented in PR-B5.
 """
 from __future__ import annotations
@@ -29,7 +35,13 @@ from app.graph.nodes._task_match import (
     parse_match_response,
     shortlist_duplicate_candidates,
 )
-from app.graph.state import ActiveTask, OutboundDraft, State
+from app.graph.state import (
+    ActiveTask,
+    ClarificationCandidate,
+    OutboundDraft,
+    PendingClarification,
+    State,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -47,6 +59,29 @@ _TITLE_MATCH_CONFIDENCE_THRESHOLD = 0.90
 # scores exactly 0.4 and would sit on the boundary. The score is a recall
 # device for building the model's candidate set — it never authorizes a write.
 _TITLE_MATCH_MIN_SCORE = 0.30
+
+# When nothing clears _TITLE_MATCH_MIN_SCORE, the open list goes to the model
+# anyway, ranked but unfiltered. Token overlap answers "do these two strings
+# share words", and the question here is "does this message report this task as
+# done" — the two come apart exactly where a user paraphrases their own task,
+# which is the normal way to describe finishing something. A zero score is
+# evidence that the words differ, not evidence that the task is unrelated, so
+# it may not decide on its own that the model never sees the list.
+#
+# The cap bounds the prompt, not the recall: it only binds on lists longer than
+# this, and complete_node.candidate_set_truncated says when it did.
+_FALLBACK_CANDIDATE_LIMIT = 40
+
+# Re-asks before the agent stops asking. The first question is open ("which
+# task did you mean?"); the second names concrete options, per
+# design/adhd-priorities.md — "if you must ask one question, offer 2-3
+# constrained choices, not open-ended". After that the agent stops rather than
+# spending more of the user's attention on a question that is not landing.
+_MAX_CLARIFICATION_ATTEMPTS = 2
+
+# Options named in a single re-ask. Recognition beats recall, but a long list
+# is its own decision load.
+_CLARIFICATION_OPTION_LIMIT = 3
 
 # Subtracted from the user's message only, never from a task title. These words
 # say "I finished something" without saying which something; leaving them in
@@ -95,6 +130,13 @@ class _TitleMatch:
     target: _CompletionTarget | None
     candidate_count: int
     confidence: float | None
+    candidates: tuple[DedupCandidate, ...] = ()
+    # True when the candidate set is the whole open list rather than titles the
+    # message actually overlaps. It changes what a null match means: over scored
+    # candidates the model is saying "the task you named is not done", which is
+    # a reason to stop; over the whole list it is saying "I could not tell",
+    # which is not.
+    widened: bool = False
 
 
 def _parse_checkpoint_datetime(value: object) -> datetime | None:
@@ -267,8 +309,44 @@ async def _resolve_title_match(incoming: str, residue: set[str], *, now: datetim
             min_score=_TITLE_MATCH_MIN_SCORE,
             query_stopwords=_COMPLETION_WORDS,
         )
+        widened = False
+        if not candidates:
+            # The message named something the shortlist could not place. Rank
+            # the whole open list and let the model read it rather than
+            # answering "which task did you mean?" without having looked.
+            widened = True
+            candidates = shortlist_duplicate_candidates(
+                incoming,
+                open_tasks,
+                limit=_FALLBACK_CANDIDATE_LIMIT,
+                min_score=0.0,
+                query_stopwords=_COMPLETION_WORDS,
+            )
+            if len(open_tasks) > _FALLBACK_CANDIDATE_LIMIT:
+                log.info(
+                    "complete_node.candidate_set_truncated",
+                    open_task_count=len(open_tasks),
+                    limit=_FALLBACK_CANDIDATE_LIMIT,
+                )
+
         if not candidates:
             return _TitleMatch(target=None, candidate_count=0, confidence=None)
+
+        def outcome(
+            target: _CompletionTarget | None, confidence: float | None
+        ) -> _TitleMatch:
+            """Attach the candidate set to every verdict, matched or not.
+
+            The rejected candidates are what the next turn's question offers as
+            options, so they have to survive a null match.
+            """
+            return _TitleMatch(
+                target=target,
+                candidate_count=len(candidates),
+                confidence=confidence,
+                candidates=tuple(candidates),
+                widened=widened,
+            )
 
         model = llm("cheap", caller="complete_title_match")
         response = await model.ainvoke([
@@ -277,20 +355,18 @@ async def _resolve_title_match(incoming: str, residue: set[str], *, now: datetim
         ])
         parsed = parse_match_response(str(response.content), candidates)
         if parsed is None:
-            return _TitleMatch(target=None, candidate_count=len(candidates), confidence=None)
+            return outcome(None, None)
 
         page_id, confidence = parsed
         if confidence < _TITLE_MATCH_CONFIDENCE_THRESHOLD:
-            return _TitleMatch(target=None, candidate_count=len(candidates), confidence=confidence)
+            return outcome(None, confidence)
 
         matches = [candidate for candidate in candidates if candidate.page_id == page_id]
         if len(matches) != 1:
-            return _TitleMatch(target=None, candidate_count=len(candidates), confidence=confidence)
+            return outcome(None, confidence)
 
-        return _TitleMatch(
-            target=_title_target(matches[0].page_id, matches[0].title, now=now),
-            candidate_count=len(candidates),
-            confidence=confidence,
+        return outcome(
+            _title_target(matches[0].page_id, matches[0].title, now=now), confidence
         )
     except Exception:
         # Counts only — the message and titles are the user's private words.
@@ -379,16 +455,94 @@ def _choose_completion_target(
     return recent_target or active_target
 
 
-def _clarify_completion_target(peer: str) -> dict[str, Any]:
+def _format_options(titles: list[str]) -> str:
+    """Render task titles as a natural inline list."""
+    if len(titles) == 1:
+        return titles[0]
+    if len(titles) == 2:
+        return f"{titles[0]} or {titles[1]}"
+    return f"{', '.join(titles[:-1])}, or {titles[-1]}"
+
+
+def _clarification_body(attempts: int, candidates: tuple[DedupCandidate, ...]) -> str:
+    """Compose the question for this attempt.
+
+    The first ask is open. A second ask that repeats it verbatim is what the
+    production failure looked like from the user's side, so the re-ask names
+    the best candidates instead — recognition rather than recall. With no
+    candidates to name there is nothing better to offer, so the open question
+    stands.
+    """
+    if attempts == 0 or not candidates:
+        return "I can mark that done. Which task did you mean?"
+
+    titles = [candidate.title for candidate in candidates[:_CLARIFICATION_OPTION_LIMIT]]
+    return f"Still not sure which one — was it {_format_options(titles)}?"
+
+
+def _clarify_completion_target(
+    peer: str,
+    *,
+    attempts: int = 0,
+    candidates: tuple[DedupCandidate, ...] = (),
+) -> dict[str, Any]:
+    """Ask which task was meant, and remember having asked.
+
+    `attempts` is the number of times this question has already gone out in the
+    current exchange. Past _MAX_CLARIFICATION_ATTEMPTS the agent stops asking
+    and leaves the tasks open — an unanswered question re-sent a third time
+    costs the user attention and returns nothing.
+    """
+    if attempts >= _MAX_CLARIFICATION_ATTEMPTS:
+        log.info(
+            "complete_node.clarification_exhausted",
+            peer=peer,
+            attempts=attempts,
+            candidate_count=len(candidates),
+        )
+        give_up_draft: OutboundDraft = {
+            "recipient": peer,
+            "body": (
+                "No problem — I'll leave those as they are. "
+                "Send me the task name whenever you want it marked done."
+            ),
+            "notion_page_id": None,
+        }
+        return {
+            "pending_outbound": [give_up_draft],
+            "conversation_state": "idle",
+            "active_task": None,
+            "pending_clarification": None,
+        }
+
+    # Titles are the user's private words: store them in checkpointed state so
+    # the re-ask can name them, and log counts only.
+    stored: list[ClarificationCandidate] = [
+        {"page_id": candidate.page_id, "title": candidate.title}
+        for candidate in candidates[:_CLARIFICATION_OPTION_LIMIT]
+    ]
+    clarification: PendingClarification = {
+        "kind": "complete_target",
+        "asked_at": datetime.now(UTC).isoformat(),
+        "attempts": attempts + 1,
+        "candidates": stored,
+    }
     no_task_draft: OutboundDraft = {
         "recipient": peer,
-        "body": "I can mark that done. Which task did you mean?",
+        "body": _clarification_body(attempts, candidates),
         "notion_page_id": None,
     }
+    log.info(
+        "complete_node.clarification_asked",
+        peer=peer,
+        attempts=attempts + 1,
+        named_option_count=len(stored) if attempts > 0 else 0,
+    )
     return {
         "pending_outbound": [no_task_draft],
         "conversation_state": "idle",
         "active_task": None,
+        "pending_clarification": clarification,
     }
 
 
@@ -403,16 +557,24 @@ async def complete_node(state: State) -> dict[str, Any]:
         active_task = state.get("active_task")
         now = datetime.now(UTC)
         active_target = _target_from_active_task(active_task, now=now)
+
+        # Attempts already spent on this question. Absent for a first "done",
+        # present when this turn is the answer to a clarification classify_intent
+        # kept alive.
+        pending = state.get("pending_clarification")
+        raw_attempts = pending.get("attempts", 0) if isinstance(pending, dict) else 0
+        attempts = raw_attempts if isinstance(raw_attempts, int) and raw_attempts >= 0 else 0
+
         try:
             recent_target = await _load_recent_outbound_target(peer)
         except Exception:
+            # Losing one source must not veto the others: the message may still
+            # name the task outright, and that path does not touch Postgres.
             log.warning(
                 "complete_node.recent_outbound_load_failed",
                 active_page_id=active_target.page_id if active_target else None,
                 exc_info=True,
             )
-            if not active_target:
-                return _clarify_completion_target(peer)
             recent_target = None
 
         # Only look the message up when it names something. "done!" resolves
@@ -431,11 +593,25 @@ async def complete_node(state: State) -> dict[str, Any]:
             title_target=title_match.target,
         )
 
-        # When the message appeared to name a task (candidates were found) but
-        # the model rejected all of them, the message asserts something is NOT
-        # done — completing from stale context would mark the wrong page.
-        if target and residue and title_match.candidate_count > 0 and title_match.target is None:
-            return _clarify_completion_target(peer)
+        # When the message appeared to name a task (candidates the message
+        # actually overlaps) but the model rejected all of them, the message
+        # asserts something is NOT done — completing from stale context would
+        # mark the wrong page.
+        #
+        # Scoped to the scored shortlist. A widened set contains every open
+        # task, so a null match over it carries no claim about any particular
+        # one: "done :) feeling good" would otherwise veto a live active task
+        # on the strength of a candidate list the message never referred to.
+        if (
+            target
+            and residue
+            and not title_match.widened
+            and title_match.candidate_count > 0
+            and title_match.target is None
+        ):
+            return _clarify_completion_target(
+                peer, attempts=attempts, candidates=title_match.candidates
+            )
 
         # Ids and counts only — the residue tokens and task titles are the
         # user's own words and stay out of the logs.
@@ -447,12 +623,16 @@ async def complete_node(state: State) -> dict[str, Any]:
             recent_page_id=recent_target.page_id if recent_target else None,
             title_page_id=title_match.target.page_id if title_match.target else None,
             candidate_count=title_match.candidate_count,
+            candidates_widened=title_match.widened,
             match_confidence=title_match.confidence,
             residue_token_count=len(residue),
+            clarification_attempts=attempts,
         )
 
         if not target:
-            return _clarify_completion_target(peer)
+            return _clarify_completion_target(
+                peer, attempts=attempts, candidates=title_match.candidates
+            )
 
         page_id = target.page_id
         task_title = target.task_title
@@ -509,6 +689,7 @@ async def complete_node(state: State) -> dict[str, Any]:
             "streak": streak,
             "tasks_completed_today": tasks_today,
             "conversation_state": "idle",
+            "pending_clarification": None,
         }
 
     except Exception:
@@ -522,4 +703,5 @@ async def complete_node(state: State) -> dict[str, Any]:
             "pending_outbound": [fallback],
             "active_task": None,
             "conversation_state": "idle",
+            "pending_clarification": None,
         }
