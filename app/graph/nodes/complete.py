@@ -496,7 +496,7 @@ def _clarify_completion_target(
     if attempts >= _MAX_CLARIFICATION_ATTEMPTS:
         log.info(
             "complete_node.clarification_exhausted",
-            peer=peer,
+            has_peer=bool(peer),
             attempts=attempts,
             candidate_count=len(candidates),
         )
@@ -534,7 +534,7 @@ def _clarify_completion_target(
     }
     log.info(
         "complete_node.clarification_asked",
-        peer=peer,
+        has_peer=bool(peer),
         attempts=attempts + 1,
         named_option_count=len(stored) if attempts > 0 else 0,
     )

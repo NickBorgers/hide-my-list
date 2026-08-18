@@ -114,12 +114,17 @@ from three sources in priority order:
 
 1. **Message title match.** When the incoming message carries words beyond the completion
    phrase (residue tokens after stripping stopwords and completion words), the node queries
-   all open non-reminder tasks via `notion.query_all()`, shortlists candidates by token
-   overlap, and asks a model call to confirm which candidate the message reports as finished.
-   A match above the 0.90 confidence threshold outranks both context sources, including an
-   active task pointing at a different page. When candidates are found but the model rejects
-   them all (null or sub-threshold), the node returns a clarifying question rather than
-   falling through to context — the message asserted something is not done.
+   all open non-reminder tasks via `notion.query_all()` and ranks candidates by Sørensen–Dice
+   token overlap. Candidates that clear the score threshold are passed to a model call to
+   confirm which the message reports as finished. If no candidate clears the threshold, the
+   node re-runs the ranking over the full open non-reminder list (capped at 40, ranked by
+   score) and asks the model anyway — so a message that paraphrases a task title rather than
+   quoting it still reaches the model. A match above the 0.90 confidence threshold outranks
+   both context sources, including an active task pointing at a different page. A null or
+   sub-threshold result over the scored shortlist returns a clarifying question rather than
+   falling through to context — the message asserted something it could not identify. A null
+   or sub-threshold result over the widened whole-list fallback means "could not tell" and
+   does not veto context.
 2. **Context comparison.** When no message-named task is resolved, the node queries
    `recent_outbound` for the peer (unresolved, unexpired rows) and compares that context
    with `active_task.selected_at`. The newer of the two wins.

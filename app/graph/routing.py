@@ -119,7 +119,7 @@ def _resolve_with_clarification(
     if classified not in _CLARIFICATION_ANSWER_INTENTS:
         log.info(
             "classify_intent.clarification_abandoned",
-            peer=state.get("peer"),
+            has_peer=bool(state.get("peer")),
             intent=classified,
             attempts=pending.get("attempts", 0),
         )
@@ -127,7 +127,7 @@ def _resolve_with_clarification(
 
     log.info(
         "classify_intent.clarification_answered",
-        peer=state.get("peer"),
+        has_peer=bool(state.get("peer")),
         classified_intent=classified,
         attempts=pending.get("attempts", 0),
     )
