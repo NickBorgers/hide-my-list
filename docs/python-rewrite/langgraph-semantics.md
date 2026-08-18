@@ -128,7 +128,21 @@ from three sources in priority order:
 2. **Context comparison.** When no message-named task is resolved, the node queries
    `recent_outbound` for the peer (unresolved, unexpired rows) and compares that context
    with `active_task.selected_at`. The newer of the two wins.
-3. **Clarification.** When no source resolves a target, the node asks which task was meant.
+3. **Clarification.** When no source resolves a target, the node asks which task was meant and
+   records the question in `state["pending_clarification"]` (kind, `asked_at`, `attempts`, and
+   the candidate titles it can offer as options). `classify_intent` owns that key's lifecycle:
+   while it is live and inside its 30-minute TTL, a CHAT- or COMPLETE-classified message routes
+   to `complete_node` as the answer; any other intent, an expired timestamp, or malformed state
+   clears it. The second unresolved turn names two or three candidates instead of repeating the
+   open question; past `_MAX_CLARIFICATION_ATTEMPTS` the node stops asking and clears the key.
+
+   `complete_node` reads the same key to pick its matching prompt. A standalone completion is
+   judged against "does this message assert the candidate is finished"; an answer to a
+   clarification is judged against "which candidate does this answer identify", because the
+   completion claim was made on the prior turn and the answer will never restate it. Both
+   framings keep the 0.90 confidence threshold and the instruction to return no match when
+   uncertain — the reframe changes what question the model is asked, not what the node is
+   allowed to write.
 
 When `recent_outbound` wins the context comparison, the node skips the Notion status write
 because the reminder worker already completes the reminder page at delivery time, rewards
