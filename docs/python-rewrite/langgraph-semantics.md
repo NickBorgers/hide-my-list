@@ -114,16 +114,47 @@ from three sources in priority order:
 
 1. **Message title match.** When the incoming message carries words beyond the completion
    phrase (residue tokens after stripping stopwords and completion words), the node queries
-   all open non-reminder tasks via `notion.query_all()`, shortlists candidates by token
-   overlap, and asks a model call to confirm which candidate the message reports as finished.
-   A match above the 0.90 confidence threshold outranks both context sources, including an
-   active task pointing at a different page. When candidates are found but the model rejects
-   them all (null or sub-threshold), the node returns a clarifying question rather than
-   falling through to context — the message asserted something is not done.
+   all open non-reminder tasks via `notion.query_all()` and ranks candidates by Sørensen–Dice
+   token overlap. Candidates that clear the score threshold are passed to a model call to
+   confirm which the message reports as finished. If no candidate clears the threshold, the
+   node re-runs the ranking over the full open non-reminder list (capped at 40, ranked by
+   score) and asks the model anyway — so a message that paraphrases a task title rather than
+   quoting it still reaches the model. A match above the 0.90 confidence threshold outranks
+   both context sources, including an active task pointing at a different page. A null or
+   sub-threshold result over the scored shortlist returns a clarifying question rather than
+   falling through to context — the message asserted something it could not identify. A null
+   or sub-threshold result over the widened whole-list fallback means "could not tell" and
+   does not veto context.
 2. **Context comparison.** When no message-named task is resolved, the node queries
    `recent_outbound` for the peer (unresolved, unexpired rows) and compares that context
    with `active_task.selected_at`. The newer of the two wins.
-3. **Clarification.** When no source resolves a target, the node asks which task was meant.
+3. **Clarification.** When no source resolves a target, the node asks which task was meant and
+   records the question in `state["pending_clarification"]` (kind, `asked_at`, `attempts`, and
+   the candidate titles it can offer as options). `classify_intent` owns that key's lifecycle:
+   while it is live and inside its 30-minute TTL, a CHAT- or COMPLETE-classified message routes
+   to `complete_node` as the answer; any other intent, an expired timestamp, or malformed state
+   clears it. An ask names up to 3 candidates only when they came from the scored shortlist —
+   `_clarify_completion_target(offerable=...)` is passed `not title_match.widened`, because a
+   widened set is the whole open list ranked by near-zero scores and its top three are not a
+   shortlist. Non-offerable asks stay open and store no options, so a page the user never saw
+   cannot become the referent of a positional answer. Either way the second ask is worded
+   differently from the first; past `_MAX_CLARIFICATION_ATTEMPTS` the node stops asking and
+   clears the key.
+
+   `complete_node` also reads the stored options back. They are re-read from the current open
+   list (dropping any that closed in the meantime), placed at the head of the candidate list in
+   the order they were offered, and enumerated in the prompt, so a positional answer — "the
+   first one", "the second" — resolves to the option it points at. That path runs even when the
+   message leaves no residue tokens, since an ordinal shortlists against nothing.
+
+   `complete_node` reads the same key to pick its matching prompt. A standalone completion is
+   judged against "does this message assert the candidate is finished"; an answer to a
+   clarification is judged against "which candidate does this answer identify", because the
+   completion claim was made on the prior turn and the answer will never restate it. Both
+   framings keep the 0.90 confidence threshold and the instruction to return no match when
+   uncertain on any task the message names — the reframe changes what question the model is
+   asked, not what that path must clear. When no task is identified by name, context sources
+   (`recent_outbound`, `active_task`) resolve as they would on a first-turn completion.
 
 When `recent_outbound` wins the context comparison, the node skips the Notion status write
 because the reminder worker already completes the reminder page at delivery time, rewards

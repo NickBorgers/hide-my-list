@@ -155,20 +155,79 @@ Intent:
 Intent classification uses the checkpointed conversation window in
 `state["messages"]`; it does not query `recent_outbound` during routing.
 After a message routes to COMPLETE, `complete_node` resolves the completion
-target by comparing:
+target from three sources, in this order of authority:
 
-- the newest unresolved `recent_outbound` row for the peer where
-  `awaiting_reply = true` and `expires_at > now()`
-- the checkpointed `active_task`, when it has a parseable, unexpired
-  `selected_at`
+1. **A task named in the message.** When the message carries words beyond the
+   completion phrase itself, they are ranked against every open non-reminder
+   task and a model call confirms which task the message reports as finished.
+   Word overlap ranks that list; it does not decide who is on it. When nothing
+   clears the ranking threshold, the whole open list goes to the model instead
+   (capped at 40, ranked), so a message that paraphrases a task rather than
+   quoting its title still reaches the model. A match at or above 0.90
+   confidence outranks both context sources below, including an active task
+   pointing at a different page.
+2. **The newest unresolved `recent_outbound` row** for the peer where
+   `awaiting_reply = true` and `expires_at > now()`.
+3. **The checkpointed `active_task`**, when it has a parseable, unexpired
+   `selected_at`.
 
-The more recent context wins. If the reminder row wins, the node rewards the
-matched `notion_page_id`, skips the Notion status write because reminder
-delivery already completes the reminder page, and marks every live
-`recent_outbound` row for that peer and `notion_page_id` `awaiting_reply = false`
-(`signal_timestamp` is the fallback when no page id is available). If no confident target exists,
-the node asks which task the user means instead of completing a checkpointed
-task by default.
+Between the two context sources, the more recent wins. If the reminder row
+wins, the node rewards the matched `notion_page_id`, skips the Notion status
+write because reminder delivery already completes the reminder page, and marks
+every live `recent_outbound` row for that peer and `notion_page_id`
+`awaiting_reply = false` (`signal_timestamp` is the fallback when no page id is
+available). If no confident target exists, the node asks which task the user
+means instead of completing a checkpointed task by default.
+
+A null match matters differently depending on which list produced it. Over the
+ranked shortlist the model is rejecting tasks the message actually overlaps —
+"done, now I need to call mom" against "Call mom" — so the node asks rather
+than falling through to context. Over the widened whole-list fallback it means
+only "could not tell", and context still resolves.
+
+### Pending Clarification
+
+The question is recorded in `state["pending_clarification"]`: its kind, when it
+was asked, how many times it has been asked, and the options it named.
+`classify_intent` owns that key's lifecycle, since it is the only node that
+runs on every turn.
+
+| Rule | Value |
+|------|-------|
+| Time-to-live from `asked_at` | 30 minutes |
+| Intents treated as an answer | CHAT, COMPLETE (steered to COMPLETE) |
+| Intents that drop the question | every other intent |
+| Options named when the message reached candidates | up to 3 |
+| Asks before the agent stops | 2 |
+
+An expired timestamp, a malformed record, or a classified intent outside the
+answer set clears the key rather than steering. Past the ask limit the node
+sends a closing message, leaves the tasks open, and clears the key.
+
+Options are named only when the message's own words put those candidates on
+the list. A widened whole-list scan is ranked by scores that are all
+effectively zero, so its top three are the first three open tasks rather than
+a shortlist; naming them would present noise as a suggestion, and because a
+named option can be answered by position, the user could accept one and
+complete a task chosen at random. In that case the question stays open and
+nothing is stored as an option — an option the user was never shown must never
+become the referent of "the first one". Each ask is worded differently from the
+one before it either way, because a question repeated verbatim is the failure
+this path exists to prevent.
+
+`complete_node` reads the same record for two things. The options it named lead
+the candidate list on the answering turn, in the order they were named, so a
+positional reply — "the first one", "the second" — resolves to the option it
+points at; an option no longer open is dropped rather than resurrected from the
+checkpoint. And the matching prompt switches framing: a standalone completion
+must assert that a task is finished, while an answer to a clarification only
+has to identify one, because the assertion was made on the previous turn.
+
+Steering an answer back to the node that asked relaxes the framing but not the
+threshold: when the answer names a task, the 0.90 confidence threshold and the
+instruction to return no match when uncertain still apply. When the answer's
+words do not identify a task, context sources (`recent_outbound`, `active_task`)
+resolve as they would on a first-turn completion.
 
 Other shorthand follow-up paths thread matched context as follows:
 

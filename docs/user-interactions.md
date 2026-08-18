@@ -211,12 +211,59 @@ sources, in this order:
    completion phrase itself — "done with the dishes", "finally called the
    dentist" — those words are matched against open, non-reminder tasks and the
    model confirms which one the message reports as finished.
+
+   Word overlap ranks that candidate list; it does not decide who is on it.
+   When no open task shares enough words with the message to rank above the
+   threshold, the whole open list goes to the model instead of no list at all.
+   Users describe finishing a task in their own words far more often than they
+   quote the title they filed it under, and a shared-word count cannot tell the
+   difference between "unrelated" and "phrased differently". Only the model can,
+   so the model is the one asked.
 2. **The most recent context source** — whichever is newer between the
    unresolved reminder the agent last sent (from `recent_outbound`) and the
    active task handed to the user by selection. If only one exists, it is used
    directly.
 3. **Clarification** — if no source resolves, the agent asks which task was
-   meant.
+   meant, and remembers having asked.
+
+   The question is held in conversation state, so the reply that answers it
+   reaches completion resolution even when the reply reads as ordinary
+   conversation on its own — "the garden one" answers a question; classified in
+   isolation it is not a completion. A message that moves elsewhere ("what
+   should I work on?") drops the question rather than overriding what the user
+   asked for, and an unanswered question expires rather than binding a much
+   later reply.
+
+   An unresolved turn names up to three candidates when the user's own words
+   reached them, because recognizing a task costs less than recalling one. When
+   nothing on the list matched those words, the question stays open instead:
+   the ranked whole list is not a shortlist, and offering its first three
+   entries would dress a guess up as a suggestion. Each ask is worded
+   differently from the last either way. After the second the agent stops
+   asking and leaves the tasks open — a question that has not landed twice does
+   not land on the third try, and asking again spends attention the user came
+   here to conserve.
+
+   Options that were named can be answered by position. "The first one" and
+   "the second" resolve against the order the options were offered in, so the
+   short answer the question invites is the answer it accepts. Naming choices
+   and then requiring the full title typed back would spend more of the user's
+   working memory than asking nothing at all. Only options the user was
+   actually shown can be answered this way, and one that is no longer open by
+   the time the answer arrives is dropped rather than resolved.
+
+   The answer is judged as an answer. A standalone completion has to assert
+   that a task is finished — that rule is what keeps "done, now I need to call
+   mom" from completing "Call mom". A reply to a clarification asserts nothing
+   and never will: the completion was claimed on the previous turn, and this
+   message only says which task it was about. So the match is made on which
+   task the answer identifies, not on whether it repeats the claim.
+
+   Holding the question steers which handler reads the next message and how
+   that message is read; it grants that handler nothing on the message side.
+   When the answer names a task, the same 0.90 confidence threshold applies.
+   When it does not, context sources (`recent_outbound`, `active_task`) resolve
+   as they would on a first-turn completion.
 
 A task named in the message outranks both context sources, including an active
 task pointing somewhere else — the user naming a task is a stronger signal than
@@ -263,9 +310,13 @@ sequenceDiagram
         AI->>AI: Resolve from reminder context or active task
     end
 
-    AI->>N: Update task status → completed
-    AI->>N: Set completedAt timestamp
-    N-->>AI: Success
+    alt Named-task or active-task completion
+        AI->>N: Update task status → completed
+        AI->>N: Set completedAt timestamp
+        N-->>AI: Success
+    else Reminder-context completion
+        Note over AI: Notion write skipped — reminder page already completed at delivery
+    end
 
     AI->>R: Trigger reward evaluation
     R->>R: Calculate intensity score
