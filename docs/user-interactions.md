@@ -260,9 +260,10 @@ sources, in this order:
    task the answer identifies, not on whether it repeats the claim.
 
    Holding the question steers which handler reads the next message and how
-   that message is read; it grants that handler nothing. A completion still
-   requires a confident match against the open-task list before any page is
-   written.
+   that message is read; it grants that handler nothing on the message side.
+   When the answer names a task, the same 0.90 confidence threshold applies.
+   When it does not, context sources (`recent_outbound`, `active_task`) resolve
+   as they would on a first-turn completion.
 
 A task named in the message outranks both context sources, including an active
 task pointing somewhere else — the user naming a task is a stronger signal than

@@ -9,9 +9,10 @@ classifier errs toward the safer CHAT fallback.
 does not weaken it. The state it reads is written by the agent, not by the
 message, so an injected message cannot conjure a clarification to hide behind;
 the override is bounded by a TTL and an attempt count; and the node it steers to
-runs its own match and its own confidence threshold before writing anything. A
-message that reaches complete_node this way has gained a reader, not a
-permission.
+runs its own match and its own confidence threshold on any task the message names.
+Context sources (`recent_outbound`, `active_task`) resolve the same way they
+would on a first-turn completion. A message that reaches complete_node this way
+has gained a reader, not a permission.
 """
 from __future__ import annotations
 

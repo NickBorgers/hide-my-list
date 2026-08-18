@@ -152,8 +152,9 @@ from three sources in priority order:
    clarification is judged against "which candidate does this answer identify", because the
    completion claim was made on the prior turn and the answer will never restate it. Both
    framings keep the 0.90 confidence threshold and the instruction to return no match when
-   uncertain — the reframe changes what question the model is asked, not what the node is
-   allowed to write.
+   uncertain on any task the message names — the reframe changes what question the model is
+   asked, not what that path must clear. When no task is identified by name, context sources
+   (`recent_outbound`, `active_task`) resolve as they would on a first-turn completion.
 
 When `recent_outbound` wins the context comparison, the node skips the Notion status write
 because the reminder worker already completes the reminder page at delivery time, rewards

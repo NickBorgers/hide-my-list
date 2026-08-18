@@ -223,9 +223,11 @@ checkpoint. And the matching prompt switches framing: a standalone completion
 must assert that a task is finished, while an answer to a clarification only
 has to identify one, because the assertion was made on the previous turn.
 
-Steering an answer back to the node that asked relaxes nothing. The 0.90
-confidence threshold, the requirement to match a currently open task, and the
-instruction to return no match when uncertain all still apply.
+Steering an answer back to the node that asked relaxes the framing but not the
+threshold: when the answer names a task, the 0.90 confidence threshold and the
+instruction to return no match when uncertain still apply. When the answer's
+words do not identify a task, context sources (`recent_outbound`, `active_task`)
+resolve as they would on a first-turn completion.
 
 Other shorthand follow-up paths thread matched context as follows:
 
