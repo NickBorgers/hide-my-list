@@ -240,6 +240,13 @@ sources, in this order:
    a question that has not landed twice does not land on the third try, and
    asking again spends attention the user came here to conserve.
 
+   Options that were named can be answered by position. "The first one" and
+   "the second" resolve against the order the options were offered in, so the
+   short answer the question invites is the answer it accepts. Naming choices
+   and then requiring the full title typed back would spend more of the user's
+   working memory than asking nothing at all. An option that is no longer open
+   by the time the answer arrives is dropped rather than resolved.
+
    The answer is judged as an answer. A standalone completion has to assert
    that a task is finished — that rule is what keeps "done, now I need to call
    mom" from completing "Call mom". A reply to a clarification asserts nothing

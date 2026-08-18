@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -255,6 +256,7 @@ def _build_completion_match_prompt(
     candidates: list[DedupCandidate],
     *,
     answering_clarification: bool = False,
+    offered: tuple[DedupCandidate, ...] = (),
 ) -> str:
     """Ask the model which candidate the message resolves to.
 
@@ -265,6 +267,12 @@ def _build_completion_match_prompt(
     already said they finished something on the previous turn and was asked
     only *which*. Judging "the garden one" against the standalone rule rejects
     it every time — correctly, for a rule that does not apply to it.
+
+    `offered` is the option list the previous turn actually named, in the order
+    it named them. Offering "was it A, B, or C?" and then being unable to read
+    "the second one" is worse than never offering choices: it invites the short
+    answer and then demands the long one. Enumerating them here is what gives
+    an ordinal a referent.
     """
     candidate_payload = [
         {"id": candidate.page_id, "title": candidate.title}
@@ -284,6 +292,18 @@ def _build_completion_match_prompt(
             "high: it marks a task the user has not finished as completed. If "
             "uncertain, return no match."
         )
+        if offered:
+            numbered = "\n".join(
+                f"{index}. {candidate.title}"
+                for index, candidate in enumerate(offered, start=1)
+            )
+            instructions += (
+                "\n\nThese options were named to the user, in this order:\n"
+                f"{numbered}\n"
+                'An answer that picks by position — "the first one", "the '
+                'second", "the last one" — refers to this numbering. Resolve it '
+                "to that option's id."
+            )
     else:
         instructions = (
             "The user sent a message reporting that they finished something. "
@@ -305,12 +325,38 @@ def _build_completion_match_prompt(
     )
 
 
+def _reoffer_candidates(
+    offered: tuple[ClarificationCandidate, ...],
+    open_tasks: list[Mapping[str, str]],
+) -> list[DedupCandidate]:
+    """Rebuild the previous turn's options, in the order they were offered.
+
+    Filtered against the current open list and re-read from it, so an option
+    that has since been completed or renamed cannot come back through a stale
+    checkpoint. Order is the offered order because that is what an ordinal
+    answer refers to; the score is unused here and carries no ranking claim.
+    """
+    open_titles = {task["id"]: task["title"] for task in open_tasks}
+    rebuilt: list[DedupCandidate] = []
+    seen: set[str] = set()
+    for option in offered:
+        if not isinstance(option, dict):
+            continue
+        page_id = option.get("page_id", "")
+        if not page_id or page_id in seen or page_id not in open_titles:
+            continue
+        seen.add(page_id)
+        rebuilt.append(DedupCandidate(page_id=page_id, title=open_titles[page_id], score=0.0))
+    return rebuilt
+
+
 async def _resolve_title_match(
     incoming: str,
     residue: set[str],
     *,
     now: datetime,
     answering_clarification: bool = False,
+    offered: tuple[ClarificationCandidate, ...] = (),
 ) -> _TitleMatch:
     """Resolve a task named in the message against open Notion tasks.
 
@@ -369,6 +415,17 @@ async def _resolve_title_match(
                     limit=_FALLBACK_CANDIDATE_LIMIT,
                 )
 
+        # The options the previous turn named lead the list, in that order, and
+        # are never dropped by ranking — an ordinal answer has no other referent,
+        # and a message like "the second one" scores nothing against any title.
+        reoffered = _reoffer_candidates(offered, open_tasks) if answering_clarification else []
+        if reoffered:
+            reoffered_ids = {candidate.page_id for candidate in reoffered}
+            candidates = reoffered + [
+                candidate for candidate in candidates
+                if candidate.page_id not in reoffered_ids
+            ]
+
         if not candidates:
             return _TitleMatch(target=None, candidate_count=0, confidence=None)
 
@@ -394,6 +451,7 @@ async def _resolve_title_match(
                 incoming,
                 candidates,
                 answering_clarification=answering_clarification,
+                offered=tuple(reoffered),
             )),
             HumanMessage(content="Return only the JSON object."),
         ])
@@ -613,6 +671,10 @@ async def complete_node(state: State) -> dict[str, Any]:
         answering = isinstance(pending, dict) and bool(pending)
         raw_attempts = pending.get("attempts", 0) if isinstance(pending, dict) else 0
         attempts = raw_attempts if isinstance(raw_attempts, int) and raw_attempts >= 0 else 0
+        raw_offered = pending.get("candidates") if isinstance(pending, dict) else None
+        offered: tuple[ClarificationCandidate, ...] = (
+            tuple(raw_offered) if answering and isinstance(raw_offered, list) else ()
+        )
 
         try:
             recent_target = await _load_recent_outbound_target(peer)
@@ -629,12 +691,16 @@ async def complete_node(state: State) -> dict[str, Any]:
         # Only look the message up when it names something. "done!" resolves
         # from context alone and must not pay for a Notion read or a model call.
         residue = _task_reference_tokens(state.get("incoming") or "")
-        if residue:
+        # Answering a question we named options in earns the lookup on its own.
+        # "the second one" reduces to no residue worth shortlisting, and it is
+        # still a complete answer to what was asked.
+        if residue or offered:
             title_match = await _resolve_title_match(
                 state.get("incoming") or "",
                 residue,
                 now=now,
                 answering_clarification=answering,
+                offered=offered,
             )
         else:
             title_match = _TitleMatch(target=None, candidate_count=0, confidence=None)

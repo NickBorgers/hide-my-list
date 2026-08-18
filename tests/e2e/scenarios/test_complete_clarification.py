@@ -104,7 +104,46 @@ async def test_the_answer_to_the_question_lands_on_the_task(
             regex_forbid=[r"(?i)which task"],
         ),
     )
-    assert second.state.get("pending_clarification") is None
+    assert second.state.get("pending_clarification") is None, (
+        "a resolved question must not survive into the next turn"
+    )
+    assert second.state.get("active_task") is None
+    assert second.state.get("conversation_state") == "idle"
+
+
+async def test_a_positional_answer_resolves_the_option_it_points_at(
+    conversation: Conversation,
+) -> None:
+    """Offering "was it A or B?" has to make "the first one" a usable reply.
+
+    Constrained choices exist to spend less of the user's working memory
+    (`design/adhd-priorities.md`). Naming options and then requiring the title
+    typed back inverts that: it invites the short answer and demands the long
+    one. The assertion reads the offered order out of the checkpoint rather
+    than assuming it, because ranking decides which task is named first.
+    """
+    first = conversation.notion.seed_task(title="Water the garden", work_type="Physical")
+    second = conversation.notion.seed_task(title="Sweep the porch", work_type="Physical")
+    conversation.offered.update({first, second})
+
+    await conversation.say(
+        "yeah did that",
+        expect=Expect(notion_untouched=[first, second], sent_count=1),
+    )
+    named = await conversation.say(
+        "the other thing",
+        expect=Expect(notion_untouched=[first, second], sent_count=1),
+    )
+
+    options = (named.state.get("pending_clarification") or {}).get("candidates") or []
+    assert len(options) >= 2, "a positional answer needs at least two options named"
+    expected = options[0]["page_id"]
+
+    await conversation.say("the first one", expect=Expect(sent_count=1))
+
+    assert conversation.notion.status_of(expected) == "Completed"
+    other = second if expected == first else first
+    assert conversation.notion.status_of(other) == "Pending"
 
 
 async def test_the_agent_stops_repeating_itself(conversation: Conversation) -> None:
@@ -117,15 +156,36 @@ async def test_the_agent_stops_repeating_itself(conversation: Conversation) -> N
     """
     task = conversation.notion.seed_task(title="Water the garden", work_type="Physical")
 
-    bodies = []
+    turns = []
     for message in ("yeah did that", "the other thing", "you know the one"):
-        turn = await conversation.say(
-            message,
-            expect=Expect(notion_untouched=[task], sent_count=1),
+        turns.append(
+            await conversation.say(
+                message,
+                expect=Expect(notion_untouched=[task], sent_count=1),
+            )
         )
-        bodies.append(turn.text)
 
+    bodies = [turn.text for turn in turns]
     assert len(set(bodies)) == 3, "the same question three times is the bug"
     assert "which task" not in bodies[-1].lower(), (
         "after the cap the agent leaves the tasks open rather than asking again"
     )
+
+    # The checkpoint is what the next turn reads, and it is the half the
+    # delivered text cannot show. A give-up turn that leaves the clarification
+    # live would look identical here and then pull the next ordinary message
+    # through COMPLETE.
+    assert turns[0].state.get("pending_clarification"), "turn 1 has to record the question"
+    assert turns[1].state.get("pending_clarification"), "turn 2 is still asking"
+    assert turns[2].state.get("pending_clarification") is None, (
+        "the handoff terminates: nothing outstanding survives the give-up turn"
+    )
+    assert turns[2].state.get("active_task") is None
+    assert turns[2].state.get("conversation_state") == "idle"
+
+    # And the next ordinary message must route on its own merits again.
+    after = await conversation.say("thanks", expect=Expect(sent_count=1))
+    assert after.intent != "COMPLETE", (
+        "a cleared clarification must stop steering the following turn"
+    )
+    assert conversation.notion.status_of(task) == "Pending"

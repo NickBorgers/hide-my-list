@@ -474,6 +474,94 @@ async def test_an_answer_is_judged_as_an_answer_not_as_a_claim() -> None:
     assert "Match only when the message asserts that candidate is done" not in prompt
 
 
+@pytest.mark.asyncio
+async def test_an_ordinal_answer_resolves_against_the_options_that_were_named() -> None:
+    """"the second one" is only an answer if the offered order is still known.
+
+    Offering "was it A, B, or C?" and then being unable to read a positional
+    reply invites the short answer and demands the long one — worse than never
+    offering choices. The options lead the candidate list in the order they
+    were named, and the prompt enumerates them so the ordinal has a referent.
+    """
+    query_all = AsyncMock(return_value={"results": [
+        _notion_page("<page_B>", "Book the dentist appointment"),
+        _notion_page("<page_A>", "Deal with the spare fridge"),
+    ]})
+    update_status = AsyncMock()
+    model = _model(json.dumps({"matched_page_id": "<page_B>", "confidence": 0.95}))
+
+    with (
+        patch("app.tools.notion.update_status", update_status),
+        patch("app.tools.notion.query_all", query_all),
+        patch(
+            "app.tools.rewards.maybe_reward",
+            new_callable=AsyncMock,
+            return_value={"text": "Nice work!", "attachment_path": None},
+        ),
+        patch.object(
+            complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)
+        ),
+        patch("app.models.llm", return_value=model),
+    ):
+        await complete_module.complete_node(
+            _state("the second one", pending_clarification=_clarification(attempts=1))
+        )
+
+    prompt = str(model.ainvoke.await_args.args[0][0].content)
+    # _clarification() offers page_A first, page_B second.
+    assert "1. Deal with the spare fridge" in prompt
+    assert "2. Book the dentist appointment" in prompt
+    assert "the second" in prompt
+
+    update_status.assert_awaited_once()
+    assert update_status.await_args.kwargs["page_id"] == "<page_B>"
+
+
+@pytest.mark.asyncio
+async def test_an_option_that_is_no_longer_open_cannot_come_back() -> None:
+    """The offered set is a checkpoint; the open list is the authority.
+
+    An option completed or deleted between the question and the answer must
+    not be resolvable from stale state, and the surviving option keeps its
+    current Notion title rather than the one stored at ask time.
+    """
+    query_all = AsyncMock(return_value={"results": [
+        _notion_page("<page_B>", "Book the dentist appointment (rescheduled)"),
+    ]})
+    model = _model(json.dumps({"matched_page_id": "<page_B>", "confidence": 0.95}))
+
+    with (
+        patch("app.tools.notion.update_status", new_callable=AsyncMock),
+        patch("app.tools.notion.query_all", query_all),
+        patch(
+            "app.tools.rewards.maybe_reward",
+            new_callable=AsyncMock,
+            return_value={"text": "Nice work!", "attachment_path": None},
+        ),
+        patch.object(
+            complete_module, "_load_recent_outbound_target", AsyncMock(return_value=None)
+        ),
+        patch("app.models.llm", return_value=model),
+    ):
+        await complete_module.complete_node(
+            _state("the dentist one", pending_clarification=_clarification(attempts=1))
+        )
+
+    prompt = str(model.ainvoke.await_args.args[0][0].content)
+    assert "<page_A>" not in prompt, "a closed option must not be offerable again"
+    assert "Book the dentist appointment (rescheduled)" in prompt
+    assert "1. Book the dentist appointment (rescheduled)" in prompt
+
+
+def test_offered_options_are_absent_from_a_standalone_prompt() -> None:
+    """Numbering only means something after a question that named options."""
+    candidates = [complete_module.DedupCandidate("<page_A>", "Call mom", 0.9)]
+    standalone = complete_module._build_completion_match_prompt(
+        "done with calling mom", candidates
+    )
+    assert "were named to the user" not in standalone
+
+
 def test_a_standalone_completion_keeps_the_stricter_framing() -> None:
     """Answer mode must not leak into a first "done with the dishes".
 

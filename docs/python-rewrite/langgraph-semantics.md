@@ -136,6 +136,12 @@ from three sources in priority order:
    clears it. The second unresolved turn names two or three candidates instead of repeating the
    open question; past `_MAX_CLARIFICATION_ATTEMPTS` the node stops asking and clears the key.
 
+   `complete_node` also reads the stored options back. They are re-read from the current open
+   list (dropping any that closed in the meantime), placed at the head of the candidate list in
+   the order they were offered, and enumerated in the prompt, so a positional answer — "the
+   first one", "the second" — resolves to the option it points at. That path runs even when the
+   message leaves no residue tokens, since an ordinal shortlists against nothing.
+
    `complete_node` reads the same key to pick its matching prompt. A standalone completion is
    judged against "does this message assert the candidate is finished"; an answer to a
    clarification is judged against "which candidate does this answer identify", because the

@@ -37,6 +37,13 @@ whatever the test says it returns regardless of what the prompt asked. Only a
 real model reading a real prompt could reject "the garden one", and only the
 chain below observed it.
 
+It also covers the option set the re-ask names: a positional answer ("the
+second one") resolving against the offered order, and an option that closed
+between the question and the answer being dropped rather than resurrected from
+the checkpoint. Offering constrained choices and then being unable to read a
+choice-shaped answer is a worse trade than not offering them, so the two
+belong to the same fix.
+
 The chain itself lives in `tests/e2e/scenarios/test_complete_clarification.py`,
 which runs the real graph against the real checkpointer. That layer is the only
 one that can observe the actual complaint — the second reply differing from the
