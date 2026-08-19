@@ -48,9 +48,9 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/tools/ops_alerts.py` — Ops alert enqueue + drain
 - `app/tools/time_context.py` — Timezone helper
 - `app/tools/db.py` — Postgres connection + migration runner
-- `app/graph/state.py` — LangGraph State TypedDict
+- `app/graph/state.py` — LangGraph State TypedDict; `pending_clarification` is absent on checkpoints written before it existed, so readers use `.get()`
 - `app/graph/graph.py` — LangGraph graph definition
-- `app/graph/routing.py` — Intent classification + conditional edges
+- `app/graph/routing.py` — Intent classification + conditional edges; owns the `pending_clarification` lifecycle, since it is the one node that runs every turn. A live clarification steers a CHAT- or COMPLETE-classified message to `complete_node` as the answer; any other intent, an expired timestamp, or malformed state drops it
 - `app/graph/nodes/intake.py` — ADD_TASK intent node
 - `app/graph/nodes/selection.py` — GET_TASK intent node
 - `app/graph/nodes/chat.py` — CHAT intent node
@@ -60,7 +60,7 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/graph/nodes/check_in.py` — CHECK_IN intent node
 - `app/graph/nodes/complete.py` — COMPLETE intent node
 - `app/graph/nodes/send.py` — Terminal send node; enforces the task-naming invariant on every draft carrying `notion_page_title`
-- `app/graph/nodes/_task_match.py` — Shared open-task extraction, token shortlist, and model-response parsing helper used by ADD_TASK (duplicate detection) and COMPLETE (title-match resolution)
+- `app/graph/nodes/_task_match.py` — Shared open-task extraction, token shortlist, and model-response parsing helper used by ADD_TASK (duplicate detection) and COMPLETE (title-match resolution). The score ranks candidates for the model; it never decides on its own that the model sees nothing — COMPLETE re-runs it unfiltered over the whole open list when nothing clears the threshold
 - `app/graph/nodes/_task_token.py` — Shared `{task}` token substitution; prompts write the literal token and the application fills in the exact stored title
 - `app/scheduler/scheduler.py` — APScheduler v3 wiring with PostgresJobStore
 - `app/scheduler/jobs.py` — Declarative SCHEDULED_JOBS list + reconcile_jobstore; jobs: `reminder_dispatcher`, `notion_health`, `ops_alerts_drain`, `state_audit`, `check_in_dispatcher`, `weekly_recap`, `reminder_scheduler`, `signal_ingress_silence`, `theme_evolution`
@@ -109,6 +109,7 @@ Support dev pipeline. Edit directly via PRs — any contributor or agent (Claude
 
 - `.devcontainer/` — Devcontainer definition. `post-create.sh` provisions `.venv` via `uv` (Python 3.12, `-e ".[dev]"`) so a fresh clone can run `pytest tests/unit/` with no manual setup; `devcontainer.json` puts `.venv/bin` on `remoteEnv.PATH` so the `.githooks/pre-commit` gate resolves `pytest` / `ruff` without shell activation. CI's `Devcontainer Build Check` builds the image only — it does not run `postCreateCommand`, so `tests/unit/test_devcontainer_python_env.py` guards the provisioning wiring. The container also inherits the developer's agent setup: `devcontainer.json` mounts the repo at its host path (`workspaceMount`/`workspaceFolder`) and bind-mounts the host `~/.claude` read-write onto the container user's home. Claude Code names per-project state (memory, sessions, plans) after the working directory, so the matching path is what lets the container read and write the same project state as the host. `tests/unit/test_devcontainer_claude_config.py` guards that mount wiring.
 - `.github/workflows/` — GitHub Actions workflow definitions
+- **Merge gates on `main`** — the `All Required Checks` repository ruleset requires exactly four status contexts: `All Required Agent Reviews` (statuses-API write from `review-finalize.yml`), `Python Validation Required`, `All Required Tests`, and `E2E Conversations Required`. Each aggregator passes when its dependencies succeed *or skip*, so path-filtered PRs are not blocked by jobs that did not need to run. The ruleset lives in GitHub settings, not in this repo, so adding an aggregator job is only half of adding a gate; `tests/unit/test_required_checks_wired.py` fails when the two halves drift. See `docs/agentic-pipeline-learnings.md` §2.11.
 - `.github/actions/` — Composite actions used by workflows
 - `.github/pull_request_template.md` — Default PR body template, including the `/review` fallback hint for missing initial review checks
 - `.github/actions/review-claude-run/` — Direct-`docker run` composite invoking Claude Code against the LiteLLM Anthropic endpoint; v2 pipeline single-writer fixer (fresh-Claude fallback path for human-authored PRs)

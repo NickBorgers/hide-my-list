@@ -4,17 +4,42 @@ Security note: low-confidence classifications default to CHAT rather than
 escalating to a potentially wrong intent. This is a prompt-injection mitigation —
 if a malicious message tries to force ADD_TASK or COMPLETE via injection, the
 classifier errs toward the safer CHAT fallback.
+
+`pending_clarification` is the one thing that overrides that fallback, and it
+does not weaken it. The state it reads is written by the agent, not by the
+message, so an injected message cannot conjure a clarification to hide behind;
+the override is bounded by a TTL and an attempt count; and the node it steers to
+runs its own match and its own confidence threshold on any task the message names.
+Context sources (`recent_outbound`, `active_task`) resolve the same way they
+would on a first-turn completion. A message that reaches complete_node this way
+has gained a reader, not a permission.
 """
 from __future__ import annotations
 
 from collections.abc import Hashable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
 
-from app.graph.state import Intent, State
+from app.graph.state import Intent, PendingClarification, State
 
 log = structlog.get_logger(__name__)
+
+# How long an unanswered clarification keeps steering the next turn. Long enough
+# to cover a user who puts the phone down mid-answer, short enough that a "yeah"
+# hours later is read as its own message rather than an answer to a question the
+# user has stopped thinking about.
+_CLARIFICATION_TTL = timedelta(minutes=30)
+
+# Mirrors complete._MAX_CLARIFICATION_ATTEMPTS. A stored record whose attempts
+# field is outside [1, cap] is treated as malformed rather than trusted to steer.
+_MAX_CLARIFICATION_ATTEMPTS = 2
+
+# Intents that can plausibly BE the answer to "which task did you finish?".
+# Anything else means the user moved on, and the clarification is dropped rather
+# than overriding what they actually asked for.
+_CLARIFICATION_ANSWER_INTENTS: frozenset[Intent] = frozenset({"CHAT", "COMPLETE"})
 
 _INTENT_SYSTEM_PROMPT = """\
 You are an intent classifier for a task management assistant called hide-my-list.
@@ -50,7 +75,87 @@ Examples:
 """
 
 
-async def classify_intent(state: State) -> dict[str, Intent | None]:
+def _live_clarification(state: State) -> PendingClarification | None:
+    """Return the outstanding clarification, or None if there is none to honor.
+
+    Fail-closed on anything malformed or expired: a clarification steers the
+    next turn away from what the classifier decided, so an unreadable one is
+    dropped rather than trusted.
+    """
+    pending = state.get("pending_clarification")
+    if not isinstance(pending, dict):
+        return None
+    if pending.get("kind") != "complete_target":
+        return None
+
+    raw_asked_at = pending.get("asked_at")
+    if not isinstance(raw_asked_at, str) or not raw_asked_at.strip():
+        return None
+    try:
+        asked_at = datetime.fromisoformat(raw_asked_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if asked_at.tzinfo is None:
+        asked_at = asked_at.replace(tzinfo=UTC)
+
+    if datetime.now(UTC) - asked_at.astimezone(UTC) > _CLARIFICATION_TTL:
+        return None
+
+    raw_attempts = pending.get("attempts")
+    if not isinstance(raw_attempts, int) or not (1 <= raw_attempts <= _MAX_CLARIFICATION_ATTEMPTS):
+        return None
+
+    raw_candidates = pending.get("candidates")
+    if not isinstance(raw_candidates, list):
+        return None
+    for c in raw_candidates:
+        if not (
+            isinstance(c, dict)
+            and isinstance(c.get("page_id"), str)
+            and isinstance(c.get("title"), str)
+        ):
+            return None
+
+    return pending
+
+
+def _resolve_with_clarification(
+    state: State, classified: Intent
+) -> dict[str, Any]:
+    """Apply an outstanding clarification to a freshly classified intent.
+
+    Every return path of classify_intent goes through here, so the key is
+    written on every turn and a clarification cannot outlive the turn that
+    should have consumed it.
+
+    Steering CHAT to COMPLETE does not authorize a completion. complete_node
+    still has to match the message against the open-task list and clear its own
+    confidence threshold before anything is written; what this changes is which
+    node gets to read the answer, not what that node is allowed to do with it.
+    """
+    pending = _live_clarification(state)
+    if pending is None:
+        return {"intent": classified, "pending_clarification": None}
+
+    if classified not in _CLARIFICATION_ANSWER_INTENTS:
+        log.info(
+            "classify_intent.clarification_abandoned",
+            has_peer=bool(state.get("peer")),
+            intent=classified,
+            attempts=pending.get("attempts", 0),
+        )
+        return {"intent": classified, "pending_clarification": None}
+
+    log.info(
+        "classify_intent.clarification_answered",
+        has_peer=bool(state.get("peer")),
+        classified_intent=classified,
+        attempts=pending.get("attempts", 0),
+    )
+    return {"intent": "COMPLETE", "pending_clarification": pending}
+
+
+async def classify_intent(state: State) -> dict[str, Any]:
     """Classify the incoming message intent using an LLM.
 
     Uses the cheap tier, which routes to a think=false model configuration
@@ -59,7 +164,7 @@ async def classify_intent(state: State) -> dict[str, Intent | None]:
     """
     incoming = state.get("incoming", "").strip()
     if not incoming:
-        return {"intent": "CHAT"}
+        return _resolve_with_clarification(state, "CHAT")
 
     try:
         from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
@@ -121,12 +226,12 @@ async def classify_intent(state: State) -> dict[str, Intent | None]:
             peer=state.get("peer"),
             intent=classified,
         )
-        return {"intent": classified}
+        return _resolve_with_clarification(state, classified)
 
     except Exception:
         log.exception("classify_intent.error", peer=state.get("peer"))
         # On any error, default to CHAT — never let classification failure break the graph
-        return {"intent": "CHAT"}
+        return _resolve_with_clarification(state, "CHAT")
 
 
 def route_intent(state: State) -> str:
