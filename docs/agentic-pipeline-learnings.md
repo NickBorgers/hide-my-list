@@ -226,6 +226,10 @@ Structural guard: `tests/unit/test_review_entry_stale_sha_guard.py`.
 **Why:** Each runtime script imports only its own env vars via `scripts/load-env.sh`. Host-based maintenance scripts validate `gh` auth via `.env` fallback so cron jobs don't silently fail when user's interactive session isn't logged in.
 **Evidence:** #271, #284
 
+### 2.11 An aggregator job is not a gate until the ruleset names it
+**Why:** A merge gate is two halves that live in different places: an aggregator job in a workflow (visible in every diff) and a `required_status_checks` context in the `All Required Checks` ruleset on `main` (visible nowhere in the repo). Building the first and forgetting the second yields a check that runs, reports, turns red, and blocks nothing — while reading as a guarantee to anyone scanning the PR's check list. `All Required Tests` and `E2E Conversations Required` were each written as gates, named as gates, and documented as gates in `DEV-AGENTS.md`, while the ruleset required only `All Required Agent Reviews` and `Python Validation Required`. The sharper failure is not red-and-merged but early-and-merged: the two wired contexts settle in under a minute while E2E takes ~4.5m on the self-hosted runner, so a PR satisfied the whole ruleset before E2E had reported anything. `tests/unit/test_required_checks_wired.py` pins the intended set and fails when a gate-shaped job is added or renamed without a decision. It is offline by construction — unit tests have no network and no admin token — so it cannot read the live ruleset; confirming that half stays manual, with the `gh api` command recorded in the test. When adding a gate, wire both halves.
+**Evidence:** #664
+
 ---
 
 ## 3. OpenClaw Runtime, Cron, and Recovery
