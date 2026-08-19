@@ -89,42 +89,14 @@ with open(container_path, "w", encoding="utf-8") as fh:
   fi
 fi
 
-# Link developer's host ~/.claude user-level customizations into the container.
-# devcontainer.json bind-mounts the host directory read-only at a staging path,
-# then this links the three supported items into the container user's
-# $HOME/.claude. Missing pieces (or an empty mount on a CI runner) are a no-op.
-if [ -n "${CLAUDE_HOST_CONFIG_DIR:-}" ] \
-   && [ -d "$CLAUDE_HOST_CONFIG_DIR" ] \
-   && [ "$CLAUDE_HOST_CONFIG_DIR" != "$HOME/.claude" ]; then
-  mkdir -p "$HOME/.claude"
-  for item in CLAUDE.md settings.json hooks; do
-    src="$CLAUDE_HOST_CONFIG_DIR/$item"
-    if [ -e "$src" ]; then
-      ln -sfn "$src" "$HOME/.claude/$item"
-      echo "Linked host Claude Code $item from $src"
-    fi
-  done
-fi
-
-# Append a source line to the container user's .bashrc so the host ~/.bashrc
-# (bind-mounted read-only at the same absolute path) is loaded on top of the
-# container's baseline. Idempotent: re-running post-create won't duplicate
-# the line. The host .bashrc's internal `source .../code/util/profile` line
-# resolves via the matching bind mount. Uses `-s` (non-empty) rather than
-# `-f` so an empty placeholder created by init-host-credentials.sh (for
-# contributors who don't have the host file) is a silent no-op.
-if [ -n "${HOST_BASHRC:-}" ] \
-   && [ -s "$HOST_BASHRC" ] \
-   && [ "$HOST_BASHRC" != "$HOME/.bashrc" ]; then
-  bashrc_mark="# host-bashrc-passthrough: $HOST_BASHRC"
-  if [ ! -f "$HOME/.bashrc" ] || ! grep -qF "$bashrc_mark" "$HOME/.bashrc"; then
-    {
-      printf '\n%s\n' "$bashrc_mark"
-      printf '[ -r "%s" ] && . "%s"\n' "$HOST_BASHRC" "$HOST_BASHRC"
-    } >> "$HOME/.bashrc"
-    echo "Wired host .bashrc passthrough into $HOME/.bashrc"
-  fi
-fi
+# The developer's whole host ~/.claude is bind-mounted read-write onto
+# $HOME/.claude, so CLAUDE.md, settings.json, hooks, agents, skills,
+# output-styles, plugins, and per-project memory need no copying here.
+# devcontainer.json also mounts the repo at its host path, which is what makes
+# the memory directory match: Claude Code names per-project state after the
+# working directory, so a container that saw /workspaces/<repo> would look up
+# an empty project. On a CI runner with no host ~/.claude, Docker creates an
+# empty directory and nothing below depends on its contents.
 
 # Helper to read pinned versions from the Dockerfile (single source of truth)
 DEVCONTAINER_DOCKERFILE="$SCRIPT_DIR/Dockerfile"

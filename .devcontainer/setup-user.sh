@@ -11,6 +11,10 @@
 set -e
 
 TARGET_USER="${1:-vscode}"
+# devcontainer.json passes ${containerWorkspaceFolder}. The repo is mounted at
+# its host path rather than under /workspaces, so the fallback search below
+# finds nothing and every host user would be read as UID 1000.
+WORKSPACE_FOLDER="${2:-}"
 
 # If target user already exists, nothing to do
 if id "$TARGET_USER" &>/dev/null; then
@@ -20,7 +24,11 @@ fi
 
 # Detect host UID/GID from workspace file ownership
 # Detect workspace directory dynamically
-WORKSPACE=$(find /workspaces -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+if [ -n "$WORKSPACE_FOLDER" ] && [ -d "$WORKSPACE_FOLDER" ]; then
+    WORKSPACE="$WORKSPACE_FOLDER"
+else
+    WORKSPACE=$(find /workspaces -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+fi
 if [ -d "$WORKSPACE" ]; then
     TARGET_UID=$(stat -c '%u' "$WORKSPACE")
     TARGET_GID=$(stat -c '%g' "$WORKSPACE")
