@@ -89,14 +89,12 @@ with open(container_path, "w", encoding="utf-8") as fh:
   fi
 fi
 
-# The developer's whole host ~/.claude is bind-mounted read-write onto
-# $HOME/.claude, so CLAUDE.md, settings.json, hooks, agents, skills,
-# output-styles, plugins, and per-project memory need no copying here.
-# devcontainer.json also mounts the repo at its host path, which is what makes
-# the memory directory match: Claude Code names per-project state after the
-# working directory, so a container that saw /workspaces/<repo> would look up
-# an empty project. On a CI runner with no host ~/.claude, Docker creates an
-# empty directory and nothing below depends on its contents.
+# Place the developer's host ~/.claude configuration in the container:
+# CLAUDE.md, settings.json, hooks, agents, skills, output-styles, plugins, and
+# this project's memory. sync-claude-config.sh owns the placement rules and the
+# read-only / writable split between them. Missing pieces (or an empty mount on
+# a CI runner) are a no-op.
+CONTAINER_REPO_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/sync-claude-config.sh"
 
 # Append a source line to the container user's .bashrc so the host ~/.bashrc
 # (bind-mounted read-only at the same absolute path) is loaded on top of the

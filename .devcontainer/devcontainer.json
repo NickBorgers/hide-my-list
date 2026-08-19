@@ -16,7 +16,8 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind,consistency=cached",
   "workspaceFolder": "${localWorkspaceFolder}",
   "mounts": [
-    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude,target=/tmp/devcontainer-host/.claude,type=bind,readonly,consistency=cached",
+    "source=${localEnv:HOME}/.claude/projects,target=/tmp/devcontainer-host/claude-projects,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly,consistency=cached",
     "source=${localEnv:HOME}/.claude.json,target=/tmp/devcontainer-host/.claude.json,type=bind,readonly,consistency=cached",
     "source=${localEnv:HOME}/.bashrc,target=${localEnv:HOME}/.bashrc,type=bind,readonly,consistency=cached",
@@ -28,6 +29,8 @@
     "TERM": "xterm-256color",
     "LANG": "en_US.UTF-8",
     "EDITOR": "nano",
+    "CLAUDE_HOST_CONFIG_DIR": "/tmp/devcontainer-host/.claude",
+    "CLAUDE_HOST_PROJECTS_DIR": "/tmp/devcontainer-host/claude-projects",
     "CLAUDE_HOST_CONFIG_FILE": "/tmp/devcontainer-host/.claude.json",
     "HOST_BASHRC": "${localEnv:HOME}/.bashrc",
     "HOST_HOME": "${localEnv:HOME}"

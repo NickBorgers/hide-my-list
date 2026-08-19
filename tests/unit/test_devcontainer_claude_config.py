@@ -1,41 +1,50 @@
-"""Structural lint: the devcontainer gives the container the host's agent config.
+"""The devcontainer carries host Claude Code config in without granting writes.
 
 A developer's Claude Code setup lives in two places: the host `~/.claude`
 directory (CLAUDE.md, settings.json, hooks, agents, skills, output-styles,
-plugins) and a per-project state directory named after the working directory
-(`~/.claude/projects/<path-slug>/`, which holds memory, sessions, and plans).
+plugins) and per-project state under `~/.claude/projects/<path-slug>/` (memory,
+sessions, plans). The container needs both, and the repo has to be mounted at
+its host path for the second one to resolve — Claude Code names project state
+after the working directory.
 
-The devcontainer reproduces both by mounting, not by copying:
+The two halves get different mounts, and the split is the security boundary:
 
-- The whole host `~/.claude` is bind-mounted read-write onto the container
-  user's home, so every customization crosses and anything written inside the
-  container persists back to the host.
-- The repo is mounted at its *host* path, so the project slug matches on both
-  sides and the container resolves the same project state.
+- The whole host `~/.claude` is mounted **read-only**. Everything that can
+  cause execution lives there. Repo-controlled code runs in this container, so
+  it must not be able to write a hook that the host agent later runs.
+- `~/.claude/projects` alone is mounted **writable**, because Claude Code
+  writes memory and session files as it works. Those are data files.
 
-Bug class prevention: the earlier setup mounted `~/.claude` read-only at a
-staging path and symlinked three items out of it. Agents, skills,
-output-styles, and plugins never crossed — so plugin-provided hooks named in
-settings.json failed inside the container. Project memory never crossed either,
+Bug class prevention: the original setup mounted `~/.claude` read-only at a
+staging path and symlinked three items out of it, so agents, skills,
+output-styles, and plugins never crossed and plugin-provided hooks named in
+settings.json failed inside the container. Project state never crossed either,
 because the container saw the repo at /workspaces/<repo> and looked up a
-project slug the host had never written.
+project name the host had never written. The first fix for that made the whole
+directory writable, which handed repo-controlled container code a way to
+persist hooks onto the host.
 
 CI's `Devcontainer Build Check` runs `devcontainer build`, which builds the
 image but never creates a container — so these assertions are the only
-automated coverage of the mount wiring.
+automated coverage of the wiring.
 """
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
 _DEVCONTAINER_DIR = _REPO_ROOT / ".devcontainer"
 _DEVCONTAINER_JSON = _DEVCONTAINER_DIR / "devcontainer.json"
+_SYNC_SCRIPT = _DEVCONTAINER_DIR / "sync-claude-config.sh"
 _POST_CREATE = _DEVCONTAINER_DIR / "post-create.sh"
 _SETUP_USER = _DEVCONTAINER_DIR / "setup-user.sh"
+_INIT_HOST = _DEVCONTAINER_DIR / "init-host-credentials.sh"
 
 _LOCAL_WORKSPACE = "${localWorkspaceFolder}"
+_CONTAINER_WORKSPACE = "/home/dev/code/hide-my-list"
+_PROJECT_SLUG = "-home-dev-code-hide-my-list"
 
 
 def _config() -> dict:
@@ -51,16 +60,18 @@ def _parse_mount(spec: str) -> dict[str, str]:
     return parsed
 
 
-def _claude_mount() -> dict[str, str]:
+def _mount_with_source(suffix: str) -> dict[str, str]:
     for spec in _config()["mounts"]:
         mount = _parse_mount(spec)
-        if mount.get("source", "").endswith("/.claude"):
+        if mount.get("source", "").endswith(suffix):
             return mount
     raise AssertionError(
-        "Expected a bind mount of the host ~/.claude in devcontainer.json. "
-        "Without it the container runs with none of the developer's Claude "
-        "Code customizations."
+        f"Expected a bind mount whose source ends with {suffix!r} in "
+        "devcontainer.json."
     )
+
+
+# --- Mount wiring -----------------------------------------------------------
 
 
 def test_workspace_is_mounted_at_its_host_path() -> None:
@@ -68,7 +79,7 @@ def test_workspace_is_mounted_at_its_host_path() -> None:
     config = _config()
     assert config.get("workspaceFolder") == _LOCAL_WORKSPACE, (
         "Expected workspaceFolder=${localWorkspaceFolder}. Under the default "
-        "/workspaces/<repo> the container derives a different project slug "
+        "/workspaces/<repo> the container derives a different project name "
         "and finds no memory, sessions, or plans."
     )
     mount = _parse_mount(config["workspaceMount"])
@@ -79,43 +90,33 @@ def test_workspace_is_mounted_at_its_host_path() -> None:
     )
 
 
-def test_host_claude_directory_is_mounted_whole_and_writable() -> None:
-    """Copying a subset is what dropped skills, plugins, and memory before."""
-    mount = _claude_mount()
+def test_host_claude_directory_is_mounted_read_only() -> None:
+    """Repo-controlled code runs here; it must not reach host hooks."""
+    mount = _mount_with_source("/.claude")
     assert mount["source"] == "${localEnv:HOME}/.claude"
+    assert "readonly" in mount, (
+        "Expected the host ~/.claude mount to stay read-only. It carries "
+        "settings.json, hooks/, and plugins/ — a writable mount lets code in "
+        "this container persist a hook that the host agent later runs."
+    )
+
+
+def test_project_state_is_mounted_writable_on_its_own() -> None:
+    """Memory and session writes need somewhere real to land."""
+    mount = _mount_with_source("/.claude/projects")
     assert "readonly" not in mount, (
-        "Expected the ~/.claude mount to be writable. Claude Code writes "
-        "memory, sessions, and plugin cache there; a read-only mount makes "
-        "every one of those writes fail inside the container."
+        "Expected ~/.claude/projects to be writable. Claude Code writes "
+        "memory, sessions, and plans there while it works."
     )
-
-
-def test_claude_mount_targets_the_container_user_home() -> None:
-    """Claude Code reads $HOME/.claude, so the mount has to land there."""
-    config = _config()
-    remote_user = config.get("remoteUser", "vscode")
-    assert _claude_mount()["target"] == f"/home/{remote_user}/.claude", (
-        "Expected the host ~/.claude to be mounted onto the container user's "
-        f"home (/home/{remote_user}/.claude). Anywhere else and Claude Code "
-        "inside the container never reads it."
-    )
-
-
-def test_post_create_does_not_copy_claude_config_piecemeal() -> None:
-    """Regression guard: the copy path is what kept losing new config kinds."""
-    text = _POST_CREATE.read_text(encoding="utf-8")
-    assert "CLAUDE_HOST_CONFIG_DIR" not in text, (
-        "post-create.sh should not stage host Claude Code config item by "
-        "item. Every new kind of config (skills, plugins, output-styles) had "
-        "to be added to that list by hand, and memory could not be linked at "
-        "all. devcontainer.json mounts the whole directory instead."
+    assert _config()["remoteEnv"]["CLAUDE_HOST_PROJECTS_DIR"] == mount["target"], (
+        "Expected CLAUDE_HOST_PROJECTS_DIR to name the writable mount's "
+        "target; sync-claude-config.sh reads it from the environment."
     )
 
 
 def test_container_user_uid_comes_from_the_workspace_path() -> None:
     """/workspaces is empty now that the repo is mounted at its host path."""
-    config = _config()
-    assert "${containerWorkspaceFolder}" in config["onCreateCommand"], (
+    assert "${containerWorkspaceFolder}" in _config()["onCreateCommand"], (
         "Expected onCreateCommand to pass ${containerWorkspaceFolder} to "
         "setup-user.sh. It reads the host UID from workspace file ownership, "
         "and the repo no longer lives under /workspaces."
@@ -143,3 +144,153 @@ def test_post_create_wires_host_bashrc_passthrough() -> None:
         "HOST_BASHRC; if post-create.sh doesn't consume it the host shell "
         "profile stops loading inside the container."
     )
+
+def test_initialize_command_creates_the_projects_mount_source() -> None:
+    """Docker materializes a missing bind source as a root-owned directory."""
+    assert '"$HOME/.claude/projects"' in _INIT_HOST.read_text(encoding="utf-8"), (
+        "Expected init-host-credentials.sh to create ~/.claude/projects on "
+        "the host before Docker resolves the bind mount."
+    )
+
+
+def test_post_create_runs_the_sync_script() -> None:
+    """The script only helps if postCreateCommand's chain calls it."""
+    text = _POST_CREATE.read_text(encoding="utf-8")
+    assert "sync-claude-config.sh" in text
+    assert "CONTAINER_REPO_ROOT=" in text, (
+        "Expected post-create.sh to pass CONTAINER_REPO_ROOT so the project "
+        "name is derived from the workspace path rather than the caller's "
+        "working directory."
+    )
+
+
+# --- Placement behavior -----------------------------------------------------
+
+
+def _build_mounts(root: Path) -> tuple[Path, Path]:
+    """Create fixtures shaped like the two bind mounts."""
+    host = root / "host-claude"
+    (host / "hooks").mkdir(parents=True)
+    (host / "agents").mkdir()
+    (host / "skills").mkdir()
+    (host / "output-styles").mkdir()
+    (host / "plugins" / "cache").mkdir(parents=True)
+    (host / "CLAUDE.md").write_text("host instructions\n", encoding="utf-8")
+    (host / "settings.json").write_text("{}\n", encoding="utf-8")
+    (host / "hooks" / "on-start.sh").write_text("echo hi\n", encoding="utf-8")
+    (host / "agents" / "auditor.md").write_text("agent\n", encoding="utf-8")
+    (host / "skills" / "helper.md").write_text("skill\n", encoding="utf-8")
+    (host / "output-styles" / "PlainTech.md").write_text("style\n", encoding="utf-8")
+    (host / "plugins" / "config.json").write_text("{}\n", encoding="utf-8")
+
+    projects = root / "host-projects"
+    memory = projects / _PROJECT_SLUG / "memory"
+    memory.mkdir(parents=True)
+    (memory / "MEMORY.md").write_text("- [Logs](logs.md)\n", encoding="utf-8")
+    return host, projects
+
+
+def _run_sync(
+    tmp_path: Path,
+    *,
+    home: Path,
+    host_dir: Path | None,
+    projects_dir: Path | None,
+) -> subprocess.CompletedProcess[str]:
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(home),
+        "CONTAINER_REPO_ROOT": _CONTAINER_WORKSPACE,
+    }
+    if host_dir is not None:
+        env["CLAUDE_HOST_CONFIG_DIR"] = str(host_dir)
+    if projects_dir is not None:
+        env["CLAUDE_HOST_PROJECTS_DIR"] = str(projects_dir)
+
+    return subprocess.run(
+        ["bash", str(_SYNC_SCRIPT)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_declarative_config_is_linked(tmp_path: Path) -> None:
+    """Host edits must show up in the container, so these are symlinks."""
+    host, projects = _build_mounts(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    _run_sync(tmp_path, home=home, host_dir=host, projects_dir=projects)
+
+    for item in ("CLAUDE.md", "settings.json", "hooks", "agents", "skills",
+                 "output-styles"):
+        link = home / ".claude" / item
+        assert link.is_symlink(), (
+            f"Expected $HOME/.claude/{item} to be a symlink into the host "
+            "config mount. Without it the container runs without the "
+            "developer's own Claude Code customizations."
+        )
+        assert link.resolve() == (host / item).resolve()
+
+
+def test_plugins_are_copied_not_linked(tmp_path: Path) -> None:
+    """Plugins carry runtime state and the config mount is read-only."""
+    host, projects = _build_mounts(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    _run_sync(tmp_path, home=home, host_dir=host, projects_dir=projects)
+
+    plugins = home / ".claude" / "plugins"
+    assert plugins.is_dir() and not plugins.is_symlink(), (
+        "Expected $HOME/.claude/plugins to be a writable copy. A symlink "
+        "points into the read-only mount, so plugin cache writes fail."
+    )
+    (plugins / "cache" / "probe").write_text("ok\n", encoding="utf-8")
+
+
+def test_project_state_links_into_the_writable_mount(tmp_path: Path) -> None:
+    """Memory written in the container has to reach the host directory."""
+    host, projects = _build_mounts(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    _run_sync(tmp_path, home=home, host_dir=host, projects_dir=projects)
+
+    container_memory = home / ".claude" / "projects" / _PROJECT_SLUG / "memory"
+    assert (container_memory / "MEMORY.md").exists(), (
+        "Expected the container's project directory to resolve to the host's "
+        "state for the same project. A different name leaves the container "
+        "with no memory at all."
+    )
+
+    (container_memory / "new-fact.md").write_text("learned inside\n", encoding="utf-8")
+    assert (projects / _PROJECT_SLUG / "memory" / "new-fact.md").exists(), (
+        "Expected memory written in the container to land in the host mount."
+    )
+
+
+def test_missing_host_config_is_a_no_op(tmp_path: Path) -> None:
+    """Contributors without a host ~/.claude, and CI runners, still build."""
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = _run_sync(tmp_path, home=home, host_dir=None, projects_dir=None)
+
+    assert result.returncode == 0
+    assert not (home / ".claude" / "CLAUDE.md").exists()
+
+
+def test_missing_projects_mount_skips_state_only(tmp_path: Path) -> None:
+    """An absent writable mount must not cost the rest of the config."""
+    host, _ = _build_mounts(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    _run_sync(tmp_path, home=home, host_dir=host, projects_dir=None)
+
+    assert (home / ".claude" / "CLAUDE.md").is_symlink()
+    assert not (home / ".claude" / "projects").exists()
