@@ -132,3 +132,14 @@ def test_post_start_chowns_the_actual_workspace() -> None:
         "Expected postStartCommand to chown ${containerWorkspaceFolder}. The "
         "repo is mounted at its host path, so chowning /workspaces is a no-op."
     )
+
+
+def test_post_create_wires_host_bashrc_passthrough() -> None:
+    """HOST_BASHRC mount + env var must be consumed; drop = silent shell regression."""
+    text = _POST_CREATE.read_text(encoding="utf-8")
+    assert "HOST_BASHRC" in text, (
+        "post-create.sh must source HOST_BASHRC into the container user's "
+        ".bashrc. devcontainer.json bind-mounts the host .bashrc and exports "
+        "HOST_BASHRC; if post-create.sh doesn't consume it the host shell "
+        "profile stops loading inside the container."
+    )
