@@ -294,3 +294,46 @@ def test_missing_projects_mount_skips_state_only(tmp_path: Path) -> None:
 
     assert (home / ".claude" / "CLAUDE.md").is_symlink()
     assert not (home / ".claude" / "projects").exists()
+
+
+def test_existing_directories_are_replaced_by_links(tmp_path: Path) -> None:
+    """`ln -sfn` into a real directory links *inside* it and still exits 0."""
+    host, projects = _build_mounts(tmp_path)
+    home = tmp_path / "home"
+    stale = home / ".claude" / "hooks"
+    stale.mkdir(parents=True)
+    (stale / "image-default.sh").write_text("baked into the image\n", encoding="utf-8")
+
+    _run_sync(tmp_path, home=home, host_dir=host, projects_dir=projects)
+
+    link = home / ".claude" / "hooks"
+    assert link.is_symlink(), (
+        "Expected an existing $HOME/.claude/hooks directory to be replaced by "
+        "the link. Left in place, the container keeps running the image's own "
+        "hooks while the script reports success."
+    )
+    assert link.resolve() == (host / "hooks").resolve()
+    assert not (link / "hooks").exists(), "Link was nested inside the directory."
+
+
+def test_existing_project_state_is_carried_into_the_host_mount(tmp_path: Path) -> None:
+    """State written before the link existed must not be dropped."""
+    host, projects = _build_mounts(tmp_path)
+    home = tmp_path / "home"
+    stale = home / ".claude" / "projects" / _PROJECT_SLUG
+    stale.mkdir(parents=True)
+    (stale / "session.jsonl").write_text("written before linking\n", encoding="utf-8")
+
+    _run_sync(tmp_path, home=home, host_dir=host, projects_dir=projects)
+
+    link = home / ".claude" / "projects" / _PROJECT_SLUG
+    assert link.is_symlink()
+    assert (projects / _PROJECT_SLUG / "session.jsonl").read_text(
+        encoding="utf-8"
+    ) == "written before linking\n", (
+        "Expected container-local project state to be merged into the host "
+        "mount before the directory was replaced by the link."
+    )
+    assert (link / "memory" / "MEMORY.md").exists(), (
+        "Expected the host's own project state to still be reachable."
+    )

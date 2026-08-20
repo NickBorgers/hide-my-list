@@ -50,6 +50,15 @@ slugify_path() {
   printf '%s' "$1" | sed 's/[^a-zA-Z0-9]/-/g'
 }
 
+# Remove a path that is a real file or directory, so a symlink can take its
+# place. A path that is already a symlink is left for `ln -sfn` to replace.
+clear_non_symlink() {
+  local path=$1
+  if [ -e "$path" ] && [ ! -L "$path" ]; then
+    rm -rf "$path"
+  fi
+}
+
 sync_config_items() {
   local host_dir=$1
 
@@ -59,6 +68,10 @@ sync_config_items() {
   for item in "${LINK_ITEMS[@]}"; do
     src="$host_dir/$item"
     if [ -e "$src" ]; then
+      # `ln -sfn` into an existing real directory creates the link *inside*
+      # it and still exits 0, which would leave the image's own hooks/ or
+      # agents/ in place while reporting success. Clear the path first.
+      clear_non_symlink "$CONTAINER_CLAUDE_DIR/$item"
       ln -sfn "$src" "$CONTAINER_CLAUDE_DIR/$item"
       echo "Linked host Claude Code $item from $src"
     fi
@@ -91,6 +104,17 @@ link_project_state() {
   link="$CONTAINER_CLAUDE_DIR/projects/$slug"
 
   mkdir -p "$projects_dir/$slug"
+
+  # A real directory here holds state Claude Code wrote before the link
+  # existed. Carry it into the host mount rather than dropping it, then clear
+  # the path so the symlink can take it. `-n` keeps the host's copy of any
+  # file that exists on both sides.
+  if [ -d "$link" ] && [ ! -L "$link" ]; then
+    cp -rn "$link/." "$projects_dir/$slug/" 2>/dev/null || true
+    echo "Merged container-local project state into $projects_dir/$slug"
+  fi
+  clear_non_symlink "$link"
+
   ln -sfn "$projects_dir/$slug" "$link"
   echo "Linked project state $link to the writable host mount"
 }
