@@ -337,3 +337,32 @@ def test_existing_project_state_is_carried_into_the_host_mount(tmp_path: Path) -
     assert (link / "memory" / "MEMORY.md").exists(), (
         "Expected the host's own project state to still be reachable."
     )
+
+
+def test_host_mount_targets_avoid_tmp() -> None:
+    """The docker-in-docker feature mounts a tmpfs over /tmp at container start.
+
+    `/usr/local/share/docker-init.sh` runs `mount -t tmpfs none /tmp`, which
+    hides anything Docker bind-mounted underneath it. Staging the host config
+    at /tmp/devcontainer-host meant the mounts existed but were invisible to
+    every process in the container, so post-create linked nothing and the
+    developer's Claude Code setup silently never arrived.
+    """
+    config = _config()
+    offenders = [
+        spec for spec in config["mounts"]
+        if _parse_mount(spec).get("target", "").startswith("/tmp/")
+    ]
+    assert not offenders, (
+        "Bind-mount targets must not live under /tmp: the docker-in-docker "
+        f"feature mounts a tmpfs there and hides them. Offending: {offenders}"
+    )
+
+    staged_env = {
+        key: value for key, value in config["remoteEnv"].items()
+        if key.startswith("CLAUDE_HOST_") and value.startswith("/tmp/")
+    }
+    assert not staged_env, (
+        "CLAUDE_HOST_* paths must point at the real mount targets, which "
+        f"cannot be under /tmp. Offending: {staged_env}"
+    )
