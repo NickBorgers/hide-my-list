@@ -89,22 +89,12 @@ with open(container_path, "w", encoding="utf-8") as fh:
   fi
 fi
 
-# Link developer's host ~/.claude user-level customizations into the container.
-# devcontainer.json bind-mounts the host directory read-only at a staging path,
-# then this links the three supported items into the container user's
-# $HOME/.claude. Missing pieces (or an empty mount on a CI runner) are a no-op.
-if [ -n "${CLAUDE_HOST_CONFIG_DIR:-}" ] \
-   && [ -d "$CLAUDE_HOST_CONFIG_DIR" ] \
-   && [ "$CLAUDE_HOST_CONFIG_DIR" != "$HOME/.claude" ]; then
-  mkdir -p "$HOME/.claude"
-  for item in CLAUDE.md settings.json hooks; do
-    src="$CLAUDE_HOST_CONFIG_DIR/$item"
-    if [ -e "$src" ]; then
-      ln -sfn "$src" "$HOME/.claude/$item"
-      echo "Linked host Claude Code $item from $src"
-    fi
-  done
-fi
+# Place the developer's host ~/.claude configuration in the container:
+# CLAUDE.md, settings.json, hooks, agents, skills, output-styles, plugins, and
+# this project's memory. sync-claude-config.sh owns the placement rules and the
+# read-only / writable split between them. Missing pieces (or an empty mount on
+# a CI runner) are a no-op.
+CONTAINER_REPO_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/sync-claude-config.sh"
 
 # Append a source line to the container user's .bashrc so the host ~/.bashrc
 # (bind-mounted read-only at the same absolute path) is loaded on top of the

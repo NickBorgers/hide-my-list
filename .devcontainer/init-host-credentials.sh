@@ -18,6 +18,7 @@ cd "$(dirname "$0")"
 # never activated.
 
 [ -e "$HOME/.claude"           ] || mkdir -p "$HOME/.claude"
+[ -e "$HOME/.claude/projects"  ] || mkdir -p "$HOME/.claude/projects"
 [ -e "$HOME/.gitconfig"        ] || touch    "$HOME/.gitconfig"
 [ -e "$HOME/.claude.json"      ] || touch    "$HOME/.claude.json"
 [ -e "$HOME/.bashrc"           ] || touch    "$HOME/.bashrc"
