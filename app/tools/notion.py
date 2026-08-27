@@ -98,6 +98,44 @@ def _raise_for_status(resp: httpx.Response) -> None:
         raise
 
 
+# 50 pages * Notion's 100-row page_size = 5,000 rows. A runaway-loop backstop, not a real cap —
+# see _query_database.
+_MAX_QUERY_PAGES = 50
+
+
+async def _query_database(payload: dict[str, Any]) -> dict[str, Any]:
+    """POST a database query, following Notion's cursor pagination to exhaustion.
+
+    Notion's page_size defaults to (and caps at) 100. Every query verb in this module wants the
+    complete result set — task matching, selection scoring, and reminder scheduling all silently
+    drop rows past page 1 otherwise. That is a real failure mode, not a theoretical one: Urgency
+    is static (docs/notion-schema.md — no auto-increase) and completed tasks are never archived
+    out of the database, so a low-urgency open task that sorts below the 100th row on a bare,
+    unfiltered query stays invisible forever, not just until something above it clears.
+
+    Returns a dict shaped like Notion's own response (`results`, `has_more: False`,
+    `next_cursor: None`) so callers reading `.get("results", [])` are unaffected by paging.
+    """
+    results: list[Any] = []
+    cursor: str | None = None
+    async with _client_factory() as client:
+        for _ in range(_MAX_QUERY_PAGES):
+            body = dict(payload)
+            if cursor:
+                body["start_cursor"] = cursor
+            resp = await client.post(f"/databases/{_database_id()}/query", json=body)
+            _raise_for_status(resp)
+            page = resp.json()
+            results.extend(page.get("results", []))
+            if not page.get("has_more"):
+                return {**page, "results": results, "has_more": False, "next_cursor": None}
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+    log.warning("notion.query.pagination_capped", pages=_MAX_QUERY_PAGES, row_count=len(results))
+    return {"results": results, "has_more": False, "next_cursor": None}
+
+
 # ---------------------------------------------------------------------------
 # Verb 1 — create_task
 # ---------------------------------------------------------------------------
@@ -212,10 +250,7 @@ async def query_pending() -> dict[str, Any]:
         },
         "sorts": [{"property": "Urgency", "direction": "descending"}],
     }
-    async with _client_factory() as client:
-        resp = await client.post(f"/databases/{_database_id()}/query", json=payload)
-        _raise_for_status(resp)
-        return resp.json()  # type: ignore[no-any-return]
+    return await _query_database(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -231,10 +266,7 @@ async def query_all() -> dict[str, Any]:
     payload = {
         "sorts": [{"property": "Urgency", "direction": "descending"}],
     }
-    async with _client_factory() as client:
-        resp = await client.post(f"/databases/{_database_id()}/query", json=payload)
-        _raise_for_status(resp)
-        return resp.json()  # type: ignore[no-any-return]
+    return await _query_database(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -263,10 +295,7 @@ async def query_due_reminders(before_iso: str | None = None) -> dict[str, Any]:
         },
         "sorts": [{"property": "Remind At", "direction": "ascending"}],
     }
-    async with _client_factory() as client:
-        resp = await client.post(f"/databases/{_database_id()}/query", json=payload)
-        _raise_for_status(resp)
-        return resp.json()  # type: ignore[no-any-return]
+    return await _query_database(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -398,10 +427,7 @@ async def query_tasks_with_unscheduled_deadlines() -> dict[str, Any]:
         },
         "sorts": [{"property": "Due At", "direction": "ascending"}],
     }
-    async with _client_factory() as client:
-        resp = await client.post(f"/databases/{_database_id()}/query", json=payload)
-        _raise_for_status(resp)
-        return resp.json()  # type: ignore[no-any-return]
+    return await _query_database(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -427,10 +453,7 @@ async def query_scheduled_tasks_with_deadlines() -> dict[str, Any]:
         },
         "sorts": [{"property": "Due At", "direction": "ascending"}],
     }
-    async with _client_factory() as client:
-        resp = await client.post(f"/databases/{_database_id()}/query", json=payload)
-        _raise_for_status(resp)
-        return resp.json()  # type: ignore[no-any-return]
+    return await _query_database(payload)
 
 
 # ---------------------------------------------------------------------------
