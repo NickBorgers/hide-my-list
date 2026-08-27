@@ -90,7 +90,7 @@ string, not what the model does with it.
 
 ---
 
-## The Eleven Bug Classes
+## The Twelve Bug Classes
 
 Each bug class leaves a permanent test. Fix -> regression test ->
 `tests/regressions/bug_<NNNN>_<slug>/`. The catalog grows; we don't relearn.
@@ -108,6 +108,7 @@ Each bug class leaves a permanent test. Fix -> regression test ->
 | 9 | Production dependency pin staleness | `tests/unit/test_signal_cli_pin.py` | Image pinned by immutable digest AND a scheduled refresh workflow exists and targets the same image |
 | 10 | Silent degradation behind intentional exception-swallowing, masked by a permissive mock | `tests/unit/test_rewards.py` (`TestImageGenerationCallContract`) | Assert outbound kwargs shape; validate each kwarg against `inspect.signature(real_dependency)` — mock return value is same whether call is valid or not |
 | 11 | Cross-turn state handoff | `tests/e2e/scenarios/` | Turn N writes state (LangGraph checkpoint or `recent_outbound`); turn N+M reads it. No single-node test can see the seam — the assertion is the per-turn invariant set in `tests/support/invariants.py`, checked after every turn of every scenario |
+| 12 | Notion database query truncation | `tests/regressions/bug_0668_notion_query_pagination/test_notion_query_pagination.py` | All five query verbs route through `_query_database()`; multi-page merge returns all results; `start_cursor` propagated on follow-up requests; cap stops runaway loop and logs `notion.query.pagination_capped` |
 
 ---
 
