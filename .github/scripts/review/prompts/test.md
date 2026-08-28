@@ -15,7 +15,7 @@ Enforce test-rig maintenance: every PR that adds or modifies production code mus
 
 The authoritative rig architecture is documented in `docs/python-rewrite/test-rig.md`. If this PR adds a new bug class or extends the layer architecture defined there, update that document AND update this reviewer prompt to enforce the new contract.
 
-Lens — eleven contract clauses:
+Lens — twelve contract clauses:
 
 1. **New public function in `app/tools/`, `app/graph/nodes/`, `app/scheduler/`, `app/ingress/`** MUST have:
    - At least one integration test asserting reachability from an end-to-end flow (catches dead-code wiring, bug class 6 — `record_reward_feedback` pattern).
@@ -67,6 +67,10 @@ Lens — eleven contract clauses:
    - Cover any new cross-turn handoff — for example, a `recent_outbound` row written by `reminder_worker` several turns before the COMPLETE turn that resolves against it — with a full multi-turn scenario rather than a single-node call with a hand-built `State`.
    - Never retry on `IntentMisrouteError`. Retrying hides the classifier drift this layer exists to detect. (Catches bug class 11 — cross-turn state handoff regressions.)
    - Rely on the seven per-turn invariants in `tests/support/invariants.py`, which run automatically after every `conversation.say()` call; a new scenario that walks past a broken invariant will trip them without additional assertions.
+
+12. **New public Notion database query verb in `app/tools/notion.py`** (any new public function whose name starts with `query_`) MUST:
+   - Route through the shared `_query_database()` helper rather than calling `client.post(...query)` directly without cursor handling. A bare unpaginated call is a blocker. (Catches bug class 12 — Notion database query truncation; see `tests/regressions/bug_0668_notion_query_pagination/test_notion_query_pagination.py` as the canonical template.)
+   - Include parametrized coverage in `tests/regressions/bug_0668_notion_query_pagination/test_notion_query_pagination.py` (or equivalent) asserting the new verb follows `has_more`/`next_cursor` pagination rather than truncating at page 1. Adding the verb to the `_VERBS` parametrize list in the existing regression file is sufficient.
 
 
 ## Scope
