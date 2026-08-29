@@ -202,6 +202,7 @@ async def test_listener_run_records_inbound_activity(db_conn: Any) -> None:
         base_url="http://signal-cli-test:8080",
         account="<test-account>",
         authorized_peers=frozenset({"<test-recipient>"}),
+        message_debounce_seconds=0,
     )
 
     with (

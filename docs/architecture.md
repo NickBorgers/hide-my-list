@@ -73,10 +73,13 @@ The app container runs four concurrent async tasks:
 1. **Signal ingress** (`app/ingress/signal_listener.py`) — WebSocket consumer on
    signal-cli REST API. For authorized text messages, extracts `(peer, text,
    timestamp)`, schedules a best-effort read receipt for the received timestamp,
-   maintains a refreshed typing indicator while graph execution is active, and
-   maps `(peer, text)` → `graph.ainvoke(...)` with `thread_id = peer` for
-   per-peer conversation isolation. Typing stop is scheduled after graph
-   completion or graph error.
+   enqueues the text in a bounded in-memory buffer, and immediately returns to
+   reading the socket. A single serial worker drains that buffer, briefly
+   debounces same-peer backlog into one combined turn, maintains a refreshed
+   typing indicator while graph execution is active, and maps `(peer, text)` →
+   `graph.ainvoke(...)` with `thread_id = peer` for per-peer conversation
+   isolation. Typing stop is scheduled after graph completion or graph error;
+   queue overflow sends one visible reply to the authorized sender.
 
 2. **LangGraph graph** (`app/graph/graph.py`) — Eight intent nodes (`ADD_TASK`,
    `GET_TASK`, `COMPLETE`, `REJECT`, `CANNOT_FINISH`, `CHECK_IN`, `NEED_HELP`,

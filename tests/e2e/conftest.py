@@ -152,6 +152,7 @@ async def _live_conversations(
                 account="+15550009999",
                 graph=observed,
                 authorized_peers=frozenset(peers),
+                message_debounce_seconds=0,
             )
             runner = asyncio.create_task(listener.run())
             try:

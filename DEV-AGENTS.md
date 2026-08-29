@@ -69,7 +69,7 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/scheduler/deadline_planner.py` — Pure deadline milestone planner and quiet-hours/load-balancing slot assignment
 - `app/scheduler/reminder_scheduling.py` — Shared deadline reminder scheduler helper; writes `reminder_scheduling_ledger`, deadline outbox rows, and private page-to-peer routing metadata
 - `app/scheduler/reminder_scheduler.py` — Daily deadline reminder backstop; catches unscheduled deadline tasks and refreshes edited deadline series
-- `app/ingress/signal_listener.py` — Authorized Signal WebSocket consumer; routes reactions to reward feedback, schedules read receipts, maintains typing indicators around graph execution, and invokes the graph for text messages
+- `app/ingress/signal_listener.py` — Authorized Signal WebSocket consumer; routes reactions to reward feedback; for text messages, schedules read receipts, enqueues into a bounded receive buffer, and uses one serial worker to debounce same-peer backlog, maintain typing indicators around graph execution, invoke the graph with `thread_id = peer`, and send one overflow reply when the queue is full
 - `app/prompts/` — Jinja2 prompt templates (`*.md.j2`) for each intent
 - `app/observability/__init__.py` — Package marker for the observability module
 - `app/observability/llm_callback.py` — `LLMObservabilityCallback` (LangChain AsyncCallbackHandler); emits `llm.call.start` / `llm.call.end` / `llm.call.error` events via structlog with tier + caller + token counts + duration. Always on in production. See `docs/python-rewrite/llm-observability.md`.

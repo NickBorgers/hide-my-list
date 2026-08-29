@@ -89,6 +89,7 @@ async def test_authorized_inbound_text_reaches_receipt_and_typing_tools() -> Non
         base_url="http://signal-cli-test:8080",
         account="<test-account>",
         authorized_peers=frozenset({"<test-recipient>"}),
+        message_debounce_seconds=0,
     )
     envelopes = [
         {
