@@ -128,6 +128,7 @@ async def test_authorized_peer_invokes_graph() -> None:
     listener = SignalListener(
         graph=graph,
         authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
     )
 
     envelopes = [_envelope("+15551234567", "hello")]
@@ -166,6 +167,7 @@ async def test_authorized_peer_schedules_receipt_and_typing_around_graph() -> No
         base_url="http://signal-cli-test:8080",
         account="<test-account>",
         authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
     )
 
     envelopes = [_envelope("+15551234567", "hello", timestamp=1_716_800_000_000)]
@@ -249,6 +251,7 @@ async def test_unauthorized_peer_silently_dropped() -> None:
     listener = SignalListener(
         graph=graph,
         authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
     )
 
     envelopes = [_envelope("+19990001111", "hello from attacker")]
@@ -272,6 +275,7 @@ async def test_authorized_reaction_records_feedback_without_graph() -> None:
         graph=graph,
         account="+15559876543",  # must match default target_author in _reaction_envelope
         authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
     )
 
     record_feedback = AsyncMock(return_value=True)
@@ -300,6 +304,7 @@ async def test_authorized_reaction_to_non_bot_message_dropped() -> None:
         graph=graph,
         account="+15559876543",
         authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
     )
 
     record_feedback = AsyncMock(return_value=True)
@@ -329,6 +334,7 @@ async def test_unauthorized_reaction_dropped_before_feedback_handler() -> None:
     listener = SignalListener(
         graph=graph,
         authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
     )
 
     record_feedback = AsyncMock(return_value=True)
@@ -352,6 +358,7 @@ async def test_mixed_stream_only_authorized_reaches_graph() -> None:
     listener = SignalListener(
         graph=graph,
         authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
     )
 
     envelopes = [
@@ -368,3 +375,145 @@ async def test_mixed_stream_only_authorized_reaches_graph() -> None:
     assert graph.ainvoke.await_count == 1
     args, _ = graph.ainvoke.await_args
     assert args[0]["peer"] == "+15551234567"
+
+
+@pytest.mark.asyncio
+async def test_receive_loop_reads_next_message_while_graph_is_slow() -> None:
+    """A slow graph turn must not stop later envelopes from being read."""
+    from app.ingress.signal_listener import SignalListener
+
+    first_graph_started = asyncio.Event()
+    release_first_graph = asyncio.Event()
+    second_receipt_started = asyncio.Event()
+    receipts: list[int] = []
+
+    async def fake_graph_ainvoke(state: dict[str, Any], *args: Any, **kwargs: Any) -> None:
+        if state["incoming"] == "first":
+            first_graph_started.set()
+            await release_first_graph.wait()
+
+    async def fake_receive_messages(**_kwargs: Any):
+        yield _envelope("+15551234567", "first", timestamp=100)
+        await first_graph_started.wait()
+        yield _envelope("+15551234567", "second", timestamp=200)
+
+    async def fake_read_receipt(
+        peer: str,
+        timestamp: int,
+        *,
+        base_url: str | None = None,
+        account: str | None = None,
+    ) -> None:
+        receipts.append(timestamp)
+        if timestamp == 200:
+            second_receipt_started.set()
+
+    graph = AsyncMock()
+    graph.ainvoke.side_effect = fake_graph_ainvoke
+    listener = SignalListener(
+        graph=graph,
+        authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
+    )
+
+    with (
+        patch("app.ingress.signal_listener.receive_messages", new=fake_receive_messages),
+        patch("app.ingress.signal_listener.send_read_receipt", new=fake_read_receipt),
+        patch("app.ingress.signal_listener.send_typing_indicator", new=AsyncMock()),
+    ):
+        runner = asyncio.create_task(listener.run())
+        await asyncio.wait_for(second_receipt_started.wait(), timeout=1)
+        assert release_first_graph.is_set() is False
+        release_first_graph.set()
+        await asyncio.wait_for(runner, timeout=1)
+
+    assert receipts == [100, 200]
+    assert graph.ainvoke.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_rapid_same_peer_messages_are_coalesced_into_one_turn() -> None:
+    """Stacked messages from one peer are joined after the debounce window."""
+    from app.ingress.signal_listener import SignalListener
+
+    graph = AsyncMock()
+    listener = SignalListener(
+        graph=graph,
+        authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0.01,
+    )
+    envelopes = [
+        _envelope("+15551234567", "first", timestamp=100),
+        _envelope("+15551234567", "second", timestamp=200),
+    ]
+
+    with (
+        patch("app.ingress.signal_listener.receive_messages", return_value=_async_gen(envelopes)),
+        patch("app.ingress.signal_listener.send_read_receipt", new=AsyncMock()),
+        patch("app.ingress.signal_listener.send_typing_indicator", new=AsyncMock()),
+    ):
+        await listener.run()
+
+    graph.ainvoke.assert_awaited_once()
+    args, kwargs = graph.ainvoke.await_args
+    assert args[0]["incoming"] == "first\nsecond"
+    assert kwargs["config"]["configurable"]["thread_id"] == "+15551234567"
+
+
+@pytest.mark.asyncio
+async def test_queue_overflow_sends_visible_reply_without_graph_drop_silence() -> None:
+    """Overflow is bounded and tells the authorized sender what happened."""
+    from app.ingress.signal_listener import SignalListener
+
+    first_graph_started = asyncio.Event()
+    release_first_graph = asyncio.Event()
+    overflow_sent = asyncio.Event()
+    overflow_replies: list[str] = []
+
+    async def fake_graph_ainvoke(state: dict[str, Any], *args: Any, **kwargs: Any) -> None:
+        if state["incoming"] == "first":
+            first_graph_started.set()
+            await release_first_graph.wait()
+
+    async def fake_receive_messages(**_kwargs: Any):
+        yield _envelope("+15551234567", "first", timestamp=100)
+        await first_graph_started.wait()
+        yield _envelope("+15551234567", "second", timestamp=200)
+        yield _envelope("+15551234567", "third", timestamp=300)
+
+    async def fake_send_message(
+        recipient: str,
+        message: str,
+        *,
+        attachment_paths: list[str] | None = None,
+        idempotency_key: str | None = None,
+        base_url: str | None = None,
+        account: str | None = None,
+    ) -> dict[str, Any]:
+        overflow_replies.append(message)
+        overflow_sent.set()
+        return {"timestamp": 999}
+
+    graph = AsyncMock()
+    graph.ainvoke.side_effect = fake_graph_ainvoke
+    listener = SignalListener(
+        graph=graph,
+        authorized_peers=frozenset({"+15551234567"}),
+        message_debounce_seconds=0,
+        queue_depth=1,
+    )
+
+    with (
+        patch("app.ingress.signal_listener.receive_messages", new=fake_receive_messages),
+        patch("app.ingress.signal_listener.send_read_receipt", new=AsyncMock()),
+        patch("app.ingress.signal_listener.send_typing_indicator", new=AsyncMock()),
+        patch("app.ingress.signal_listener.send_message", new=fake_send_message),
+    ):
+        runner = asyncio.create_task(listener.run())
+        await asyncio.wait_for(overflow_sent.wait(), timeout=1)
+        release_first_graph.set()
+        await asyncio.wait_for(runner, timeout=1)
+
+    assert len(overflow_replies) == 1
+    assert "try again in a minute" in overflow_replies[0]
+    assert graph.ainvoke.await_count == 2

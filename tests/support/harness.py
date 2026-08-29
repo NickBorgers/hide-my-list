@@ -15,9 +15,10 @@ test sit upstream of the graph. `thread_id` is derived from the peer E.164
 (signal_listener.py) — enter at the graph and the test asserts its own assumption
 about checkpoint partitioning, so a change to that derivation would leave every
 chain green while every real conversation silently lost its history.
-`_extract_peer_and_text` is production's only inbound parser. And the auth gate
-plus the read-receipt and typing-indicator background tasks run *concurrently
-with* `ainvoke`, which is the only place a background task could race the graph.
+`_extract_peer_and_text` is production's only inbound parser. And the auth gate,
+read-receipt scheduling, bounded receive queue, and typing-indicator background
+tasks are all upstream of or wrapped around `ainvoke`, which is the only place a
+background task could race the graph.
 
 **The clock is never faked.** `complete_node` reads `datetime.now(UTC)` while
 Postgres reads `now()`; faking one and not the other invents a skew that exists
