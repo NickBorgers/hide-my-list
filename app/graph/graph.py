@@ -100,6 +100,8 @@ def build_graph(checkpointer: Any = None) -> Any:
 
     # All intent nodes flow into the terminal send node
     for node_name in routing_map.values():
+        if node_name == "send":
+            continue
         builder.add_edge(node_name, "send")
 
     # Send node is the terminal

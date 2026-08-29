@@ -115,5 +115,10 @@ class State(TypedDict):
     # classify_intent, which is the one node that runs on every turn.
     pending_clarification: NotRequired[PendingClarification | None]
 
+    # Internal routing flag for a classifier transport/backend failure. When
+    # true, classify_intent has already produced the user-facing fallback draft,
+    # so the graph routes straight to send instead of invoking a second LLM node.
+    classification_error_fallback: NotRequired[bool]
+
     # Typing for extra keys accepted by LangGraph but not declared above
     __pydantic_extra__: Any

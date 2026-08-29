@@ -36,6 +36,10 @@ _CLARIFICATION_TTL = timedelta(minutes=30)
 # field is outside [1, cap] is treated as malformed rather than trusted to steer.
 _MAX_CLARIFICATION_ATTEMPTS = 2
 
+# Same user-facing fallback as chat_node's own LLM failure path. Classification
+# backend failures use it directly to avoid routing into a second doomed LLM call.
+_LLM_UNAVAILABLE_FALLBACK = "Having trouble thinking right now — try again?"
+
 # Intents that can plausibly BE the answer to "which task did you finish?".
 # Anything else means the user moved on, and the clarification is dropped rather
 # than overriding what they actually asked for.
@@ -135,7 +139,11 @@ def _resolve_with_clarification(
     """
     pending = _live_clarification(state)
     if pending is None:
-        return {"intent": classified, "pending_clarification": None}
+        return {
+            "intent": classified,
+            "pending_clarification": None,
+            "classification_error_fallback": False,
+        }
 
     if classified not in _CLARIFICATION_ANSWER_INTENTS:
         log.info(
@@ -144,7 +152,11 @@ def _resolve_with_clarification(
             intent=classified,
             attempts=pending.get("attempts", 0),
         )
-        return {"intent": classified, "pending_clarification": None}
+        return {
+            "intent": classified,
+            "pending_clarification": None,
+            "classification_error_fallback": False,
+        }
 
     log.info(
         "classify_intent.clarification_answered",
@@ -152,7 +164,29 @@ def _resolve_with_clarification(
         classified_intent=classified,
         attempts=pending.get("attempts", 0),
     )
-    return {"intent": "COMPLETE", "pending_clarification": pending}
+    return {
+        "intent": "COMPLETE",
+        "pending_clarification": pending,
+        "classification_error_fallback": False,
+    }
+
+
+def _resolve_with_backend_fallback(state: State) -> dict[str, Any]:
+    """Draft the LLM-unavailable reply without invoking another intent node."""
+    peer = state.get("peer", "")
+    pending = _live_clarification(state)
+    return {
+        "intent": "CHAT",
+        "pending_clarification": pending,
+        "pending_outbound": [
+            {
+                "recipient": peer,
+                "body": _LLM_UNAVAILABLE_FALLBACK,
+                "notion_page_id": None,
+            }
+        ],
+        "classification_error_fallback": True,
+    }
 
 
 async def classify_intent(state: State) -> dict[str, Any]:
@@ -230,8 +264,10 @@ async def classify_intent(state: State) -> dict[str, Any]:
 
     except Exception:
         log.exception("classify_intent.error", peer=state.get("peer"))
-        # On any error, default to CHAT — never let classification failure break the graph
-        return _resolve_with_clarification(state, "CHAT")
+        # The classifier backend failed before producing an answer. Return the
+        # same canned LLM-unavailable draft chat_node would produce, but do not
+        # spend a second LLM call trying to reach it.
+        return _resolve_with_backend_fallback(state)
 
 
 def route_intent(state: State) -> str:
@@ -239,6 +275,9 @@ def route_intent(state: State) -> str:
 
     Maps each intent to its handler node. Unknown intents route to chat.
     """
+    if state.get("classification_error_fallback") is True:
+        return "send"
+
     intent = state.get("intent")
 
     routing: dict[Intent | None, str] = {
@@ -267,6 +306,7 @@ def build_routing_map() -> dict[Hashable, str]:
         "check_in": "check_in",
         "need_help": "need_help",
         "chat": "chat",
+        "send": "send",
     }
 
 
