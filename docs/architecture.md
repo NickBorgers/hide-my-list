@@ -137,6 +137,15 @@ alias; the app has no direct connection to any provider API.
 `LLM_PROXY_API_KEY` is forwarded as the bearer token. If the proxy does not
 require auth, set it to any non-empty placeholder in the runtime environment.
 
+Every request carries an explicit timeout (`LLM_REQUEST_TIMEOUT_SECONDS`,
+default 120s) and retry cap (`LLM_MAX_RETRIES`, default 1), giving a worst case
+of 240s per call. The model host holds one model in RAM and serves one request
+at a time, so an unbounded call does not merely delay its own turn — it holds
+the only inference slot while every queued conversation waits behind it. The
+ceiling stays below any gateway timeout in front of the proxy so the app gives
+up on its own clock and can classify the failure, rather than waiting out a
+504 it cannot distinguish from a slow answer.
+
 ## Security
 
 - Narrow code paths are the injection containment. The app has no `fetch_url`,
@@ -155,6 +164,8 @@ require auth, set it to any non-empty placeholder in the runtime environment.
 | `NOTION_DATABASE_ID` | Tasks database identifier |
 | `LLM_PROXY_BASE_URL` | OpenAI-compatible LiteLLM proxy endpoint for the primary LLM |
 | `LLM_PROXY_API_KEY` | LiteLLM proxy bearer token for the primary LLM |
+| `LLM_REQUEST_TIMEOUT_SECONDS` | Per-LLM-request timeout (default `120`) |
+| `LLM_MAX_RETRIES` | Retries per LLM request (default `1`) |
 | `OPENAI_API_KEY` | Reward image generation |
 | `DATABASE_URL` | Postgres connection string |
 | `SIGNAL_CLI_URL` | signal-cli REST API base URL |

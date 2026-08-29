@@ -35,18 +35,28 @@ model instance. The callback emits llm.call.start / llm.call.end /
 llm.call.error events via structlog, tagged with tier + caller. The caller
 kwarg (short node name e.g. "intake", "chat") is optional but should always
 be provided by graph nodes.
+
+Latency ceiling: every call carries an explicit request timeout and retry cap
+(see _request_timeout_seconds / _max_retries). Without them the OpenAI SDK
+applies its own defaults, and a wedged model host turns into a multi-minute
+hang per call — which, because the model backend serves one request at a time,
+stalls every conversation queued behind it.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
+import structlog
 from langchain_openai import ChatOpenAI
 
 from app.observability.llm_callback import LLMObservabilityCallback
+
+log = structlog.get_logger(__name__)
 
 _REPO_ROOT = Path(__file__).parent.parent
 _MODEL_TIERS_PATH = _REPO_ROOT / "setup" / "model-tiers.json"
@@ -88,6 +98,68 @@ _TIER_EXTRA_BODY: dict[str, dict[str, Any]] = {
 _TIER_MAX_TOKENS: dict[str, int] = {
     "cheap": 1024,
 }
+
+# Per-request latency ceiling. The model backend holds one model in RAM and
+# serves one request at a time, so an unbounded call does not just delay its own
+# turn — it holds the only inference slot and every queued conversation waits
+# behind it. Observed successful calls land between 0.6s and 8.2s; the default
+# leaves room for queue wait behind another tenant on the same backend plus a
+# slow reasoning turn, and still gives up long before the reverse proxy in front
+# of the LiteLLM proxy synthesizes its own 504 at 600s. Failing on our own clock
+# keeps the error ours to classify instead of an opaque gateway timeout.
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
+
+# Attempts = _max_retries + 1. The OpenAI SDK default of 2 retries multiplies
+# the ceiling by three; one retry absorbs a transient blip while keeping the
+# worst case (2 x 120s = 240s) under the 600s gateway timeout.
+_DEFAULT_MAX_RETRIES = 1
+
+
+def _request_timeout_seconds() -> float:
+    """Per-request timeout in seconds, overridable via LLM_REQUEST_TIMEOUT_SECONDS."""
+    raw = os.environ.get(
+        "LLM_REQUEST_TIMEOUT_SECONDS",
+        str(_DEFAULT_REQUEST_TIMEOUT_SECONDS),
+    )
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning(
+            "models.invalid_request_timeout",
+            configured_value=raw,
+            fallback_seconds=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    if value <= 0 or not math.isfinite(value):
+        log.warning(
+            "models.invalid_request_timeout",
+            configured_value=raw,
+            fallback_seconds=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return value
+
+
+def _max_retries() -> int:
+    """Retry count per call, overridable via LLM_MAX_RETRIES. 0 disables retries."""
+    raw = os.environ.get("LLM_MAX_RETRIES", str(_DEFAULT_MAX_RETRIES))
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "models.invalid_max_retries",
+            configured_value=raw,
+            fallback_retries=_DEFAULT_MAX_RETRIES,
+        )
+        return _DEFAULT_MAX_RETRIES
+    if value < 0:
+        log.warning(
+            "models.invalid_max_retries",
+            configured_value=raw,
+            fallback_retries=_DEFAULT_MAX_RETRIES,
+        )
+        return _DEFAULT_MAX_RETRIES
+    return value
 
 
 def _require_llm_proxy_config() -> tuple[str, str]:
@@ -197,6 +269,11 @@ def llm(tier: Tier, *, temperature: float = 0.0, caller: str | None = None) -> C
     logged. At-least-once delivery of log events (LangChain callback
     invocation semantics).
 
+    Every returned instance carries an explicit request timeout and retry cap so
+    a wedged model host surfaces as a prompt error rather than a hang. Override
+    with LLM_REQUEST_TIMEOUT_SECONDS and LLM_MAX_RETRIES; both fall back to the
+    module defaults when unset or unparseable.
+
     Args:
         tier: One of 'expensive', 'medium', 'cheap', 'reminder'.
         temperature: Sampling temperature. Defaults to 0.0 for deterministic output.
@@ -229,6 +306,8 @@ def llm(tier: Tier, *, temperature: float = 0.0, caller: str | None = None) -> C
         "temperature": temperature,
         "base_url": base_url,
         "api_key": api_key,
+        "timeout": _request_timeout_seconds(),
+        "max_retries": _max_retries(),
     }
     max_tokens = _TIER_MAX_TOKENS.get(tier)
     if max_tokens is not None:
