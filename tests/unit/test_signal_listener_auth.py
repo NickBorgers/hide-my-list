@@ -8,6 +8,7 @@ closed default).
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -463,12 +464,13 @@ async def test_rapid_same_peer_messages_are_coalesced_into_one_turn() -> None:
 @pytest.mark.asyncio
 async def test_queue_overflow_sends_visible_reply_without_graph_drop_silence() -> None:
     """Overflow is bounded and tells the authorized sender what happened."""
+    from app.ingress import signal_listener
     from app.ingress.signal_listener import SignalListener
+    from app.tools import signal_client
 
     first_graph_started = asyncio.Event()
     release_first_graph = asyncio.Event()
     overflow_sent = asyncio.Event()
-    overflow_replies: list[str] = []
 
     async def fake_graph_ainvoke(state: dict[str, Any], *args: Any, **kwargs: Any) -> None:
         if state["incoming"] == "first":
@@ -481,23 +483,17 @@ async def test_queue_overflow_sends_visible_reply_without_graph_drop_silence() -
         yield _envelope("+15551234567", "second", timestamp=200)
         yield _envelope("+15551234567", "third", timestamp=300)
 
-    async def fake_send_message(
-        recipient: str,
-        message: str,
-        *,
-        attachment_paths: list[str] | None = None,
-        idempotency_key: str | None = None,
-        base_url: str | None = None,
-        account: str | None = None,
-    ) -> dict[str, Any]:
-        overflow_replies.append(message)
+    async def fake_send_message(*args: Any, **kwargs: Any) -> dict[str, Any]:
         overflow_sent.set()
         return {"timestamp": 999}
 
     graph = AsyncMock()
     graph.ainvoke.side_effect = fake_graph_ainvoke
+    send_message = AsyncMock(side_effect=fake_send_message)
     listener = SignalListener(
         graph=graph,
+        base_url="http://signal-cli-test:8080",
+        account="<test-account>",
         authorized_peers=frozenset({"+15551234567"}),
         message_debounce_seconds=0,
         queue_depth=1,
@@ -507,13 +503,22 @@ async def test_queue_overflow_sends_visible_reply_without_graph_drop_silence() -
         patch("app.ingress.signal_listener.receive_messages", new=fake_receive_messages),
         patch("app.ingress.signal_listener.send_read_receipt", new=AsyncMock()),
         patch("app.ingress.signal_listener.send_typing_indicator", new=AsyncMock()),
-        patch("app.ingress.signal_listener.send_message", new=fake_send_message),
+        patch("app.ingress.signal_listener.send_message", new=send_message),
     ):
         runner = asyncio.create_task(listener.run())
         await asyncio.wait_for(overflow_sent.wait(), timeout=1)
         release_first_graph.set()
         await asyncio.wait_for(runner, timeout=1)
 
-    assert len(overflow_replies) == 1
-    assert "try again in a minute" in overflow_replies[0]
+    send_message.assert_awaited_once()
+    assert send_message.await_args.args == (
+        "+15551234567",
+        signal_listener._OVERFLOW_REPLY,
+    )
+    assert send_message.await_args.kwargs == {
+        "base_url": "http://signal-cli-test:8080",
+        "account": "<test-account>",
+    }
+    real_parameters = inspect.signature(signal_client.send_message).parameters
+    assert set(send_message.await_args.kwargs) <= set(real_parameters)
     assert graph.ainvoke.await_count == 2

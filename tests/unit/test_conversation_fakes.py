@@ -76,7 +76,7 @@ async def test_signal_sink_captures_attachments_and_key() -> None:
 
 
 def test_signal_sink_install_patches_listener_namespace() -> None:
-    """The listener imports the receipt helpers by value; its namespace is the target."""
+    """The listener imports helpers by value; its namespace is the target."""
     from app.ingress import signal_listener
     from app.tools import signal_client
 
@@ -84,12 +84,14 @@ def test_signal_sink_install_patches_listener_namespace() -> None:
     undo = sink.install()
     try:
         assert signal_client.send_message == sink.send_message
+        assert signal_listener.send_message == sink.send_message
         assert signal_listener.send_read_receipt == sink.send_read_receipt
         assert signal_listener.send_typing_indicator == sink.send_typing_indicator
     finally:
         undo()
 
     assert signal_client.send_message != sink.send_message
+    assert signal_listener.send_message != sink.send_message
     assert signal_listener.send_read_receipt != sink.send_read_receipt
 
 

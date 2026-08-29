@@ -101,19 +101,18 @@ class SignalSink:
     def install(self) -> Callable[[], None]:
         """Patch every Signal egress path. Returns an undo callable.
 
-        Three targets, not one. `send_node` and `reminder_worker` look
+        Four targets, not one. `send_node` and `reminder_worker` look
         `send_message` up on the module at call time, so patching
         `app.tools.signal_client` covers them. The ingress listener instead does
-        a module-level `from app.tools.signal_client import send_read_receipt,
-        send_typing_indicator`, so its own namespace holds the only reference
-        those calls resolve — patching the source module would miss them and let
-        real HTTP escape from a background task.
+        module-level imports for the overflow send and receipt/typing helpers,
+        so its own namespace holds the references those calls resolve.
         """
         from app.ingress import signal_listener
         from app.tools import signal_client
 
         targets: list[tuple[Any, str, Any]] = [
             (signal_client, "send_message", self.send_message),
+            (signal_listener, "send_message", self.send_message),
             (signal_listener, "send_read_receipt", self.send_read_receipt),
             (signal_listener, "send_typing_indicator", self.send_typing_indicator),
         ]

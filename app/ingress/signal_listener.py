@@ -300,11 +300,11 @@ class SignalListener:
             if len(messages) > 1:
                 log.info(
                     "signal_listener.messages_coalesced",
-                    peer=peer[:4] + "***",
+                    peer="<recipient>",
                     message_count=len(messages),
                 )
         except Exception:
-            log.exception("signal_listener.graph_error", peer=peer[:4] + "***")
+            log.exception("signal_listener.graph_error", peer="<recipient>")
         finally:
             typing_stop.set()
             _start_background_task(
@@ -387,7 +387,7 @@ class SignalListener:
 
                 await _record_inbound_activity()
 
-                log.info("signal_listener.message_received", peer=peer[:4] + "***")
+                log.info("signal_listener.message_received", peer="<recipient>")
 
                 if timestamp is not None:
                     _start_background_task(
@@ -409,7 +409,7 @@ class SignalListener:
 
                 log.warning(
                     "signal_listener.queue_overflow",
-                    peer=peer[:4] + "***",
+                    peer="<recipient>",
                     queue_depth=self._message_buffer.max_depth,
                 )
                 _start_background_task(
