@@ -89,9 +89,9 @@ def test_overrides_are_honoured() -> None:
     assert kwargs.get("max_retries") == 0
 
 
-@pytest.mark.parametrize("bad_value", ["not-a-number", "0", "-1", ""])
+@pytest.mark.parametrize("bad_value", ["not-a-number", "0", "-1", "", "inf", "Infinity", "nan", "1e309"])
 def test_unusable_timeout_override_falls_back_to_default(bad_value: str) -> None:
-    """A malformed or non-positive override must not reintroduce an unbounded call."""
+    """A malformed, non-positive, or non-finite override must not reintroduce an unbounded call."""
     from app import models as models_module
 
     kwargs = _construct("medium", _proxy_env(LLM_REQUEST_TIMEOUT_SECONDS=bad_value))

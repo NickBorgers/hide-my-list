@@ -45,6 +45,7 @@ stalls every conversation queued behind it.
 from __future__ import annotations
 
 import json
+import math
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -129,7 +130,7 @@ def _request_timeout_seconds() -> float:
             fallback_seconds=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
         )
         return _DEFAULT_REQUEST_TIMEOUT_SECONDS
-    if value <= 0:
+    if value <= 0 or not math.isfinite(value):
         log.warning(
             "models.invalid_request_timeout",
             configured_value=raw,

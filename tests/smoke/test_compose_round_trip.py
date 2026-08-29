@@ -68,6 +68,8 @@ def compose_stack() -> object:
         "NOTION_DATABASE_ID": os.environ.get("NOTION_DATABASE_ID", "smoke-fake-db"),
         "LLM_PROXY_API_KEY": "smoke-fake-llm-key",
         "LLM_PROXY_BASE_URL": "https://proxy.test/v1",
+        "LLM_REQUEST_TIMEOUT_SECONDS": "90",
+        "LLM_MAX_RETRIES": "0",
         "REMINDER_SLOT_MINUTES": "30",
         "REMINDER_SLOT_CAPACITY": "2",
         "REMINDER_QUIET_START_HOUR": "22",
@@ -204,6 +206,8 @@ def test_app_receives_llm_proxy_env(compose_stack: object) -> None:
     assert "SIGNAL_RECEIVE_IDLE_TIMEOUT_SECONDS=300" in env_lines
     assert "SIGNAL_INGRESS_SILENCE_CHECK_INTERVAL_MINUTES=60" in env_lines
     assert "SIGNAL_INBOUND_SILENCE_ALERT_THRESHOLD_SECONDS=129600" in env_lines
+    assert "LLM_REQUEST_TIMEOUT_SECONDS=90" in env_lines
+    assert "LLM_MAX_RETRIES=0" in env_lines
 
 
 def test_app_boots_runtime(compose_stack: object) -> None:

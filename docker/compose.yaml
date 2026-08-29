@@ -51,6 +51,10 @@ services:
       - SIGNAL_INGRESS_SILENCE_CHECK_INTERVAL_MINUTES=${SIGNAL_INGRESS_SILENCE_CHECK_INTERVAL_MINUTES:-60}
       # SIGNAL_INBOUND_SILENCE_ALERT_THRESHOLD_SECONDS: inbound silence before structured warning log (default 129600 = 36 h).
       - SIGNAL_INBOUND_SILENCE_ALERT_THRESHOLD_SECONDS=${SIGNAL_INBOUND_SILENCE_ALERT_THRESHOLD_SECONDS:-129600}
+      # LLM_REQUEST_TIMEOUT_SECONDS: per-request timeout ceiling in seconds (default 120).
+      - LLM_REQUEST_TIMEOUT_SECONDS=${LLM_REQUEST_TIMEOUT_SECONDS:-120}
+      # LLM_MAX_RETRIES: retry count per LLM call; 0 disables retries (default 1).
+      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-1}
       # REWARD_ARTIFACTS_DIR: mount path for generated PNG reward images.
       # Must match the volume mount below so images persist across container restarts.
       - REWARD_ARTIFACTS_DIR=/data/reward_artifacts
