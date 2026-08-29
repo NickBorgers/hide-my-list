@@ -73,7 +73,7 @@ The Python/LangGraph application. Safe to edit via PRs.
 - `app/prompts/` — Jinja2 prompt templates (`*.md.j2`) for each intent
 - `app/observability/__init__.py` — Package marker for the observability module
 - `app/observability/llm_callback.py` — `LLMObservabilityCallback` (LangChain AsyncCallbackHandler); emits `llm.call.start` / `llm.call.end` / `llm.call.error` events via structlog with tier + caller + token counts + duration. Always on in production. See `docs/python-rewrite/llm-observability.md`.
-- `app/models.py` — Model tier validation at startup; reads `setup/model-tiers.json`
+- `app/models.py` — Model tier validation at startup; reads `setup/model-tiers.json`. Every `ChatOpenAI` instance carries an explicit request timeout and retry cap (`LLM_REQUEST_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES`) — the model host serves one request at a time, so an unbounded call holds the only inference slot and stalls every queued conversation
 - `app/main.py` — Entry point; LangSmith guard
 - `migrations/0001_initial.sql` — Initial schema: outbox, recent_outbound, ops_alerts_throttle
 - `migrations/0002_reward_manifests.sql` — Reward manifests table

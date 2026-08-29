@@ -161,6 +161,10 @@ def test_llm_constructs_chatopenai_with_expected_kwargs() -> None:
             assert "max_tokens" not in call_kwargs
             assert call_kwargs["base_url"] == "https://proxy.test/v1"
             assert call_kwargs["api_key"] == "test-key"
+            # Both must be explicit. Falling back to the SDK defaults is how a
+            # wedged model host turned into a 30-minute hang per call.
+            assert call_kwargs["timeout"] == models_module._DEFAULT_REQUEST_TIMEOUT_SECONDS
+            assert call_kwargs["max_retries"] == models_module._DEFAULT_MAX_RETRIES
 
     models_module._load_model_tiers.cache_clear()
 
